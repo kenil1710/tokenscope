@@ -1921,9 +1921,13 @@ class TokenScope(gl.Contract):
             checks.append((k, str(recomputed[k]), str(stored[k + "_score"])))
         checks.append(("overall", str(recomputed["overall"]),
                        str(stored["overall_score"])))
-        for k in ("confidence", "rug_level", "badge", "content_hash"):
-            checks.append((k, str(recomputed.get(k, expect_hash)),
-                           str(stored[k])))
+        for k in ("confidence", "rug_level", "badge"):
+            checks.append((k, str(recomputed[k]), str(stored[k])))
+        # Stated outright rather than reached through a .get fallback: this is
+        # the one place that must not quietly stop checking, and a fallback
+        # would compare the wrong value the day _score gains that key.
+        checks.append(("content_hash", expect_hash,
+                       str(stored["content_hash"])))
         checks.append(("rug_flags", ",".join(recomputed["rug_flags"]),
                        str(target.rug_flags)))
         checks.append(("sources_ok", _sources(feats), str(target.sources_ok)))
