@@ -1,0 +1,79 @@
+{
+  "project": "TokenScope",
+  "category": "Intelligent Contracts",
+  "summary": "On-chain multi-chain ERC-20 risk assessment. Validators agree on a 29-ordinal feature vector; every score is arithmetic over it.",
+  "rubric_version": "1.0.0",
+  "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
+  "chains_scored": ["ethereum", "base", "arbitrum", "polygon"],
+  "data_source": "Blockscout /api/v2, unauthenticated",
+  "note": "Studionet and Bradbury run the same artifacts. Verify with: shasum -a 256 build/*.min.py and compare against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py",
+  "artifacts": {
+    "build/TokenScope.min.py": {
+      "sha256": "59d46056724cf38c4b9f865e9b6894720a69c71fdf17f759587ab0a9c33200ac",
+      "bytes": 50157,
+      "source": "contracts/TokenScope.py",
+      "source_sha256": "c291672138f8fe388b5424121b390bb544efcdf3ea4dd380d2016240fb496066"
+    },
+    "build/RiskConsumer.min.py": {
+      "sha256": "dc872118f0c4d69c2177ccc11edc4c14eefcb1c91d98732184c88e4c2191d183",
+      "bytes": 12122,
+      "source": "contracts/RiskConsumer.py",
+      "source_sha256": "0a71ac971a3d078b6de5d4000e74c0c192611c6e611355fb6b23173e8372781b"
+    }
+  },
+  "deployments": {
+    "studionet": {
+      "network": "studionet",
+      "chain_id": "61999",
+      "rpc": "https://studio.genlayer.com/api",
+      "TokenScope": {
+        "address": "0x9a7C9B075d4E20d843660b63Eb8367A0eE7b7652",
+        "tx": "0xc26c07e434993162c1069c11e4cba60120b8bea985d67d5abbe071beeb70277a",
+        "artifact": "build/TokenScope.min.py",
+        "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source."
+      },
+      "RiskConsumer": {
+        "address": "0x1545340f5FA81b88ac6046a0C5155BE864faDf98",
+        "tx": "0x095c889057efc2caf2615430ab2fe329567a3f67add660d3bd69976cd5ed3bcd",
+        "artifact": "build/RiskConsumer.min.py",
+        "constructor_args": ["0x9a7C9B075d4E20d843660b63Eb8367A0eE7b7652"]
+      },
+      "render_probe": {
+        "address": "0xae8aDe63EB2400D0dFEC841Ee1A886AE17e4c7f5",
+        "artifact": "contracts/_render_probe.py",
+        "why": "throwaway diagnostic, not part of TokenScope; the evidence behind docs/PROBE.md, including the 422 on ?type=ERC-20 and the transient 500 from base.blockscout.com"
+      }
+    },
+    "testnet-bradbury": {
+      "network": "testnet-bradbury",
+      "chain_id": "4221",
+      "rpc": "https://rpc-bradbury.genlayer.com",
+      "explorer": "https://explorer-bradbury.genlayer.com/",
+      "TokenScope": {
+        "address": "0x45D629fDb0cBa2859cF6dF60c68cd709c5212516",
+        "tx": "0xc2d1da11fb566911cd5147867ab0c60c3330201ca10fc8d52211ffbd5ab97fe3",
+        "artifact": "build/TokenScope.min.py",
+        "fee_note": "fee_wei set to 0, same reason as Studionet."
+      },
+      "RiskConsumer": {
+        "address": "0x85F40F9067Ba49D53Aac594911Db3250e8C1C5bA",
+        "tx": "0x19b1ed469baff9e30fef94f82faad4719f48fe8f48d796a112f6fecd7fca9280",
+        "artifact": "build/RiskConsumer.min.py",
+        "constructor_args": ["0x45D629fDb0cBa2859cF6dF60c68cd709c5212516"]
+      }
+    }
+  },
+  "size_finding": {
+    "claim": "AuditCourt's notes put the GenVM runner deploy limit at 48 KB.",
+    "measured": "That is stale. The 50,157-byte TokenScope artifact deployed successfully to BOTH Studionet and Bradbury.",
+    "why_it_matters": "Several hours of size optimisation were being spent against an unverified constant; deploying the oversized artifact answered it in one transaction."
+  },
+  "cross_network_result": {
+    "token": "USDT 0xdac17f958d2ee523a2206206994597c13d831ec7 on ethereum",
+    "content_hash": "422:d4c68f52cadab4c8",
+    "overall": 86,
+    "rug_level": "MEDIUM",
+    "rug_flags": ["MINTABLE", "PAUSABLE", "HAS_BLACKLIST"],
+    "note": "Byte-identical content_hash and score produced on Studionet and on Bradbury by different validator sets. The vector, not the network, decides the score."
+  }
+}
