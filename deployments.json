@@ -14,10 +14,10 @@
   "note": "Studionet and Bradbury run the same artifacts. Verify with: shasum -a 256 build/*.min.py and compare against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py",
   "artifacts": {
     "build/TokenScope.min.py": {
-      "sha256": "93ea8a1ef418ec6c26fbfaf9bf8570ce3918b4e1cc5c6843014d48bfdbe537cb",
-      "bytes": 50199,
+      "sha256": "ea11184d73be70cf4cccb5236854ce082edddd5b6e0117d81be4ad18e0d9f941",
+      "bytes": 50382,
       "source": "contracts/TokenScope.py",
-      "source_sha256": "62e7d00c5fdfc145fd3b080cd056d7e4f6b9c28770a318339da0ffab38d01ab6"
+      "source_sha256": "f7f2c7a0804b5836276a6c6a97d0983b5fa600b09aedbb50415a50466b2d441a"
     },
     "build/RiskConsumer.min.py": {
       "sha256": "d261b00d5d8f56164640a2ee9533950721a099ed75715fc68805f355904c185c",
@@ -32,17 +32,18 @@
       "chain_id": "61999",
       "rpc": "https://studio.genlayer.com/api",
       "TokenScope": {
-        "address": "0x301DC59624F858B33032787873B0E76f248aD6be",
-        "tx": "0x33cc5a96578d1b85caa240f0e4d8d4b8123e3020e7175d8f2e1380f172f3c219",
+        "address": "0x386245fE7e8c28967f84F79eb93532b12cCa9987",
+        "tx": "0x56ba06f28bfcd5bbb23dcbaf0e541882eaaea0e1bc62d4e9b27094c4957a878c",
         "artifact": "build/TokenScope.min.py",
-        "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source."
+        "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source.",
+        "verified": "genlayer code <address> is byte-identical to build/TokenScope.min.py (50,382 bytes), checked."
       },
       "RiskConsumer": {
-        "address": "0x8501A6DAECe5C7695527D425b464eBCc0C299645",
-        "tx": "0x87b69c481c8a4eb9a3fbaa427bf304735348b1eaee4508bc1011d0cc80f8951b",
+        "address": "0x76cDC81E9dEe818b59Ee0FD198d081D33B47ea87",
+        "tx": "0x1fbbdc1bed73d33d908e24ed1aee627240a8f70081ea928fb9db5a28367e82bf",
         "artifact": "build/RiskConsumer.min.py",
         "constructor_args": [
-          "0x301DC59624F858B33032787873B0E76f248aD6be"
+          "0x386245fE7e8c28967f84F79eb93532b12cCa9987"
         ]
       },
       "render_probe": {
@@ -57,41 +58,68 @@
       "rpc": "https://rpc-bradbury.genlayer.com",
       "explorer": "https://explorer-bradbury.genlayer.com/",
       "TokenScope": {
-        "address": "0xf8CbC28B0Dc68aC123b46d954F6a8f5B6c9396Bc",
-        "tx": "0xf2a6171f79a150bee9fe5f24ec661110b2fc4f5064db700e04bbb816bd2d4b43",
+        "address": "0xA81049c078F84816611b0297C8c4365CAda118a1",
+        "tx": "0x4fabaccd251b545031771ee3b9ccd17ef1c9262e2d48b6228cdbfeb31225083a",
         "artifact": "build/TokenScope.min.py",
         "fee_note": "fee_wei set to 0, same reason as Studionet."
       },
       "RiskConsumer": {
-        "address": "0x2CF70Abc62276F6FCBdd545899d57f699b6c37Ff",
-        "tx": "0x2b0b117bca7e00861c2a2e42489a6b9a1b3817cb9213b394c86224d97173d5aa",
+        "address": "0x9d7268Ad83c89bE3d5c494a2558c748CF1BA7Ad2",
+        "tx": "0x79a40c32b2e2f7d4b1f956778386f7a6101ab65eafd5050a3b62ed80d470e76c",
         "artifact": "build/RiskConsumer.min.py",
         "constructor_args": [
-          "0xf8CbC28B0Dc68aC123b46d954F6a8f5B6c9396Bc"
+          "0xA81049c078F84816611b0297C8c4365CAda118a1"
         ]
       }
     }
   },
   "size_finding": {
     "claim": "AuditCourt's notes put the GenVM runner deploy limit at 48 KB.",
-    "measured": "That is stale. The 50,199-byte TokenScope artifact deployed successfully to BOTH Studionet and Bradbury.",
+    "measured": "That is stale. The 50,382-byte TokenScope artifact deployed successfully to BOTH Studionet and Bradbury.",
     "why_it_matters": "Several hours of size optimisation were being spent against an unverified constant; deploying the oversized artifact answered it in one transaction."
   },
   "cross_network_result": {
     "token": "USDT 0xdac17f958d2ee523a2206206994597c13d831ec7 on ethereum",
-    "content_hash": "422:d4c68f52cadab4c8",
-    "overall": 86,
-    "rug_level": "MEDIUM",
-    "rug_flags": [
-      "MINTABLE",
-      "PAUSABLE",
-      "HAS_BLACKLIST"
-    ],
-    "note": "Byte-identical content_hash and score produced on Studionet and on Bradbury by different validator sets, from the same artifact. The vector, not the network, decides the score."
+    "same_hash_across_networks": "422:d4c68f52cadab4c8 with overall 86, produced independently on Studionet and Bradbury by different validator sets minutes apart.",
+    "later_rescore": "An hour later on Bradbury: 422:41a76eee24bba743, overall still 86. Exactly one of the 29 ordinals moved - supply_d 2 -> 3, the share of supply held outside the top 50 crossing the 40% rung.",
+    "what_this_shows": "Determinism is enforced WITHIN a round, with no tolerance. Across time a token's real distribution moves and a rung eventually gets crossed. Quantization absorbed the drift, so overall stayed 86 - a design comparing raw percentages would have reported a change where nothing material happened."
   },
   "composability_result": {
     "consumer": "RiskConsumer.list_token goes through TokenScope.require_safe, which REVERTS rather than returning false.",
     "listed": "USDT on Bradbury: tier blue_chip, overall 86, rug_level MEDIUM, trade_cap 10000000",
     "revert_proof": "list_token on an unscored token returns [EXPECTED] no score for ethereum:0x514910771af9ca656af840dff83e8264ecf986ca, while preview_listing on the same token degrades to {listable:false, reason:'never scored', badge:'UNSCORED'}"
+  },
+  "live_scores": {
+    "USDT ethereum": {
+      "overall": 86,
+      "rug_level": "MEDIUM",
+      "rug_flags": [
+        "MINTABLE",
+        "PAUSABLE",
+        "HAS_BLACKLIST"
+      ],
+      "confidence": "HIGH"
+    },
+    "PEPE ethereum": {
+      "overall": 87,
+      "rug_level": "MEDIUM",
+      "rug_flags": [
+        "HAS_BLACKLIST"
+      ],
+      "confidence": "HIGH"
+    },
+    "USDT0 arbitrum": {
+      "overall": 88,
+      "rug_level": "MEDIUM",
+      "rug_flags": [
+        "UPGRADEABLE_PROXY"
+      ],
+      "confidence": "HIGH",
+      "note": "verification 65 vs ethereum USDT's 75 - it is a proxy, so proxy_v drops a rung"
+    },
+    "base / polygon": {
+      "scored": false,
+      "why": "Blockscout /holders on those hosts returns 500 / Cloudflare 524. Base refuses cleanly in ~37s; Polygon's round outlives the CLI timeout because its 524 arrives after a ~100s stall. Neither writes a score - both chains read back 0 tokens_tracked."
+    }
   }
 }
