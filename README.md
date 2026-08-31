@@ -19,6 +19,10 @@ accept as collateral?*
 
 ## Live
 
+**Web app: [tokenscope-two.vercel.app](https://tokenscope-two.vercel.app)** — scan a
+token, browse the registry, compare two tokens, and re-verify any score on-chain.
+Runs against Bradbury; `frontend/` builds against either network.
+
 | | Studionet | Bradbury |
 |---|---|---|
 | **TokenScope** | `0x386245fE7e8c28967f84F79eb93532b12cCa9987` | `0xA81049c078F84816611b0297C8c4365CAda118a1` |
@@ -450,6 +454,41 @@ transfers`, `distribution_score: 80`, confidence `HIGH`.
 Found by running it, not by reading it — the offline suite was green through the
 whole thing, because every fixture it had used a supply small enough to fit.
 Pinned now by `test_a_high_supply_token_still_gets_a_distribution_score`.
+
+## Frontend
+
+`frontend/` is a Next.js 16 + Tailwind 4 app — a security console rather than a
+trading dashboard.
+
+| Route | What it does |
+|---|---|
+| `/` | Marketing. No wallet. Stats server-rendered from the live contract. |
+| `/scan` | Submit an address and chain, watch the consensus round, read the result. |
+| `/token/[address]` | Full breakdown: five dimension bars, rug findings with plain-English consequences, score history, the agreed 29-ordinal evidence vector, and a **Re-verify on-chain** button that calls `verify_risk`. |
+| `/explore` | Every scored token, with per-chain safest/riskiest leaderboards and a rug-warning filter. |
+| `/compare` | Two tokens side by side across all five dimensions, with the verdict and why. |
+| `/docs` | What each dimension measures, how rug detection reads the ABI, and the `require_safe` integration. |
+
+Three details worth knowing:
+
+- **Reads need no wallet.** Only running a *new* scan does. The landing page never
+  touches one.
+- **`/api/rpc` is a same-origin relay for Studionet.** Studio serves CORS headers
+  on success but drops them on its 429s, so an exhausted rate limit reaches the
+  browser as a phantom CORS error instead of the rate-limit error it is. Bradbury
+  sets them on errors too, so it stays direct.
+- **Degraded chains are labelled in the UI.** Base and Polygon are shown as
+  *Source degraded* with the reason, so nobody is invited into a scan that cannot
+  settle.
+
+```bash
+cd frontend
+cp .env.example .env.local     # defaults to Studionet
+npm install
+npm run dev                    # http://localhost:3000
+
+npm run typecheck && npm run lint && npm run build
+```
 
 ## Build
 
