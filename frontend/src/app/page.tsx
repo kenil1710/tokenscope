@@ -192,55 +192,55 @@ export default async function LandingPage() {
           </div>
         </section>
 
-        {/* ── Chains ───────────────────────────────────────────────────── */}
+        {/* ── Chains ───────────────────────────────────────────────────
+            Marketing surface: all four chains, equal weight, names and marks.
+            Per-host data-source status is a technical detail and lives on
+            /docs#chains, where someone is actually looking for it. ── */}
         <section className="border-b border-hairline bg-canvas">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:py-20">
             <Reveal>
-              <p className="text-xs font-semibold uppercase tracking-wider text-ink-400">
-                Multi-chain
-              </p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-ink-900 sm:text-3xl">
-                One rubric, four chains
-              </h2>
-              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-ink-600">
-                Blockscout serves the same schema on every host, so a single extraction
-                path covers all four. Where a chain&rsquo;s data source is degraded,
-                TokenScope says so and refuses rather than scoring on partial evidence.
-              </p>
+              <div className="text-center">
+                <p className="text-xs font-semibold uppercase tracking-wider text-ink-400">
+                  Multi-chain
+                </p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight text-ink-900 sm:text-3xl">
+                  One rubric, four chains
+                </h2>
+                <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-ink-600">
+                  Blockscout serves the same schema on every host, so one extraction
+                  path covers them all. Same five dimensions, same rug detection, same
+                  evidence vector — whichever chain your token lives on.
+                </p>
+              </div>
             </Reveal>
 
-            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {CHAINS.map((chain, i) => (
                 <Reveal key={chain.id} delay={i * 0.06}>
-                  <div className="flex h-full flex-col rounded-xl border border-hairline bg-surface p-5 shadow-card">
-                    <div className="flex items-center gap-3">
-                      <ChainMark chain={chain.id} size={32} />
-                      <span className="text-base font-semibold text-ink-900">
-                        {chain.label}
-                      </span>
-                    </div>
-                    <span
-                      className={`mt-3 inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                        chain.healthy
-                          ? "bg-safe-50 text-safe-700"
-                          : "bg-warn-50 text-warn-700"
-                      }`}
-                    >
-                      <span
-                        className={`size-1.5 rounded-full ${chain.healthy ? "bg-safe-500" : "bg-warn-500"}`}
-                        aria-hidden
-                      />
-                      {chain.healthy ? "Scoring" : "Source degraded"}
+                  <div className="group flex h-full flex-col items-center rounded-xl border border-hairline bg-surface px-5 py-7 text-center shadow-card transition hover:border-ink-300 hover:shadow-lift">
+                    <ChainMark
+                      chain={chain.id}
+                      size={44}
+                      className="transition group-hover:scale-105"
+                    />
+                    <span className="mt-3.5 text-base font-semibold text-ink-900">
+                      {chain.label}
                     </span>
-                    {chain.note ? (
-                      <p className="mt-2.5 text-[11px] leading-relaxed text-ink-500">
-                        {chain.note}
-                      </p>
-                    ) : null}
+                    <span className="mt-1 text-xs text-ink-400">ERC-20</span>
                   </div>
                 </Reveal>
               ))}
             </div>
+
+            <Reveal delay={0.24}>
+              <p className="mt-8 text-center text-xs text-ink-400">
+                Per-chain data-source status is on the{" "}
+                <Link href="/docs#chains" className="underline hover:text-ink-600">
+                  how it works
+                </Link>{" "}
+                page.
+              </p>
+            </Reveal>
           </div>
         </section>
 

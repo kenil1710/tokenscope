@@ -242,7 +242,10 @@ export default function DocsPage() {
                 path covers all four chains. Where a host&rsquo;s data is degraded,
                 TokenScope refuses rather than scoring on partial evidence.
               </p>
-              <div className="mt-5 space-y-3">
+              <h3 className="mt-6 text-sm font-semibold uppercase tracking-wider text-ink-400">
+                Current data-source status
+              </h3>
+              <div className="mt-3 space-y-3">
                 {CHAINS.map((chain) => (
                   <div
                     key={chain.id}
