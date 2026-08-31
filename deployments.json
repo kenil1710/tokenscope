@@ -4,21 +4,26 @@
   "summary": "On-chain multi-chain ERC-20 risk assessment. Validators agree on a 29-ordinal feature vector; every score is arithmetic over it.",
   "rubric_version": "1.0.0",
   "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
-  "chains_scored": ["ethereum", "base", "arbitrum", "polygon"],
+  "chains_scored": [
+    "ethereum",
+    "base",
+    "arbitrum",
+    "polygon"
+  ],
   "data_source": "Blockscout /api/v2, unauthenticated",
   "note": "Studionet and Bradbury run the same artifacts. Verify with: shasum -a 256 build/*.min.py and compare against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py",
   "artifacts": {
     "build/TokenScope.min.py": {
-      "sha256": "59d46056724cf38c4b9f865e9b6894720a69c71fdf17f759587ab0a9c33200ac",
-      "bytes": 50157,
+      "sha256": "93ea8a1ef418ec6c26fbfaf9bf8570ce3918b4e1cc5c6843014d48bfdbe537cb",
+      "bytes": 50199,
       "source": "contracts/TokenScope.py",
-      "source_sha256": "c291672138f8fe388b5424121b390bb544efcdf3ea4dd380d2016240fb496066"
+      "source_sha256": "62e7d00c5fdfc145fd3b080cd056d7e4f6b9c28770a318339da0ffab38d01ab6"
     },
     "build/RiskConsumer.min.py": {
-      "sha256": "dc872118f0c4d69c2177ccc11edc4c14eefcb1c91d98732184c88e4c2191d183",
-      "bytes": 12122,
+      "sha256": "d261b00d5d8f56164640a2ee9533950721a099ed75715fc68805f355904c185c",
+      "bytes": 12205,
       "source": "contracts/RiskConsumer.py",
-      "source_sha256": "0a71ac971a3d078b6de5d4000e74c0c192611c6e611355fb6b23173e8372781b"
+      "source_sha256": "17ff02e9550e03e4d96fbd71e1516efc344707b4d2d41ef42a4561b4ac23bcf8"
     }
   },
   "deployments": {
@@ -27,16 +32,18 @@
       "chain_id": "61999",
       "rpc": "https://studio.genlayer.com/api",
       "TokenScope": {
-        "address": "0x9a7C9B075d4E20d843660b63Eb8367A0eE7b7652",
-        "tx": "0xc26c07e434993162c1069c11e4cba60120b8bea985d67d5abbe071beeb70277a",
+        "address": "0x301DC59624F858B33032787873B0E76f248aD6be",
+        "tx": "0x33cc5a96578d1b85caa240f0e4d8d4b8123e3020e7175d8f2e1380f172f3c219",
         "artifact": "build/TokenScope.min.py",
         "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source."
       },
       "RiskConsumer": {
-        "address": "0x1545340f5FA81b88ac6046a0C5155BE864faDf98",
-        "tx": "0x095c889057efc2caf2615430ab2fe329567a3f67add660d3bd69976cd5ed3bcd",
+        "address": "0x8501A6DAECe5C7695527D425b464eBCc0C299645",
+        "tx": "0x87b69c481c8a4eb9a3fbaa427bf304735348b1eaee4508bc1011d0cc80f8951b",
         "artifact": "build/RiskConsumer.min.py",
-        "constructor_args": ["0x9a7C9B075d4E20d843660b63Eb8367A0eE7b7652"]
+        "constructor_args": [
+          "0x301DC59624F858B33032787873B0E76f248aD6be"
+        ]
       },
       "render_probe": {
         "address": "0xae8aDe63EB2400D0dFEC841Ee1A886AE17e4c7f5",
@@ -50,22 +57,24 @@
       "rpc": "https://rpc-bradbury.genlayer.com",
       "explorer": "https://explorer-bradbury.genlayer.com/",
       "TokenScope": {
-        "address": "0x45D629fDb0cBa2859cF6dF60c68cd709c5212516",
-        "tx": "0xc2d1da11fb566911cd5147867ab0c60c3330201ca10fc8d52211ffbd5ab97fe3",
+        "address": "0xf8CbC28B0Dc68aC123b46d954F6a8f5B6c9396Bc",
+        "tx": "0xf2a6171f79a150bee9fe5f24ec661110b2fc4f5064db700e04bbb816bd2d4b43",
         "artifact": "build/TokenScope.min.py",
         "fee_note": "fee_wei set to 0, same reason as Studionet."
       },
       "RiskConsumer": {
-        "address": "0x85F40F9067Ba49D53Aac594911Db3250e8C1C5bA",
-        "tx": "0x19b1ed469baff9e30fef94f82faad4719f48fe8f48d796a112f6fecd7fca9280",
+        "address": "0x2CF70Abc62276F6FCBdd545899d57f699b6c37Ff",
+        "tx": "0x2b0b117bca7e00861c2a2e42489a6b9a1b3817cb9213b394c86224d97173d5aa",
         "artifact": "build/RiskConsumer.min.py",
-        "constructor_args": ["0x45D629fDb0cBa2859cF6dF60c68cd709c5212516"]
+        "constructor_args": [
+          "0xf8CbC28B0Dc68aC123b46d954F6a8f5B6c9396Bc"
+        ]
       }
     }
   },
   "size_finding": {
     "claim": "AuditCourt's notes put the GenVM runner deploy limit at 48 KB.",
-    "measured": "That is stale. The 50,157-byte TokenScope artifact deployed successfully to BOTH Studionet and Bradbury.",
+    "measured": "That is stale. The 50,199-byte TokenScope artifact deployed successfully to BOTH Studionet and Bradbury.",
     "why_it_matters": "Several hours of size optimisation were being spent against an unverified constant; deploying the oversized artifact answered it in one transaction."
   },
   "cross_network_result": {
@@ -73,7 +82,16 @@
     "content_hash": "422:d4c68f52cadab4c8",
     "overall": 86,
     "rug_level": "MEDIUM",
-    "rug_flags": ["MINTABLE", "PAUSABLE", "HAS_BLACKLIST"],
-    "note": "Byte-identical content_hash and score produced on Studionet and on Bradbury by different validator sets. The vector, not the network, decides the score."
+    "rug_flags": [
+      "MINTABLE",
+      "PAUSABLE",
+      "HAS_BLACKLIST"
+    ],
+    "note": "Byte-identical content_hash and score produced on Studionet and on Bradbury by different validator sets, from the same artifact. The vector, not the network, decides the score."
+  },
+  "composability_result": {
+    "consumer": "RiskConsumer.list_token goes through TokenScope.require_safe, which REVERTS rather than returning false.",
+    "listed": "USDT on Bradbury: tier blue_chip, overall 86, rug_level MEDIUM, trade_cap 10000000",
+    "revert_proof": "list_token on an unscored token returns [EXPECTED] no score for ethereum:0x514910771af9ca656af840dff83e8264ecf986ca, while preview_listing on the same token degrades to {listable:false, reason:'never scored', badge:'UNSCORED'}"
   }
 }

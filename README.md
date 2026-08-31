@@ -21,8 +21,11 @@ accept as collateral?*
 
 | | Studionet | Bradbury |
 |---|---|---|
-| **TokenScope** | `0x9a7C9B075d4E20d843660b63Eb8367A0eE7b7652` | `0x45D629fDb0cBa2859cF6dF60c68cd709c5212516` |
-| **RiskConsumer** | `0x1545340f5FA81b88ac6046a0C5155BE864faDf98` | `0x85F40F9067Ba49D53Aac594911Db3250e8C1C5bA` |
+| **TokenScope** | `0x301DC59624F858B33032787873B0E76f248aD6be` | `0xf8CbC28B0Dc68aC123b46d954F6a8f5B6c9396Bc` |
+| **RiskConsumer** | `0x8501A6DAECe5C7695527D425b464eBCc0C299645` | `0x2CF70Abc62276F6FCBdd545899d57f699b6c37Ff` |
+
+Both networks run the **same artifact** — `shasum -a 256 build/TokenScope.min.py`
+→ `93ea8a1e…`, or `genlayer code <address> | diff - build/TokenScope.min.py`.
 
 Chains scored: **ethereum, base, arbitrum, polygon** — one Blockscout schema,
 four hosts.
@@ -220,6 +223,23 @@ The gate checks score **and** rug level, because they fail differently: a 40 is
 merely unproven; an 85 with a `CRITICAL` rug level looks excellent on every
 dimension while the owner can still mint unlimited supply into it.
 
+Live, on Bradbury — `list_token(USDT, ethereum)` through `require_safe`:
+
+```json
+{ "symbol": "USDT", "overall": 86, "rug_level": "MEDIUM",
+  "tier": "blue_chip", "trade_cap": 10000000, "score_id": 1 }
+```
+
+And the two paths on a token the oracle has never scored, which is the whole
+point of the distinction:
+
+```
+list_token(...)      ->  reverts: [EXPECTED] no score for ethereum:0x5149…86ca
+preview_listing(...) ->  {"listable": false, "reason": "never scored",
+                          "badge": "UNSCORED",
+                          "hint": "call request_risk on the oracle first"}
+```
+
 ## Verifiability
 
 `verify_risk(score_id)` recomputes all five dimensions, the overall, the rug
@@ -227,6 +247,18 @@ level, the flags, the badge, the confidence, the content hash and the derived
 source list **from stored evidence alone**, and reports which fields — if any —
 disagree with storage. Nothing in that path trusts anything written beside the
 evidence.
+
+Live, on the PEPE record above:
+
+```json
+{ "valid": true, "failed": [], "content_hash": "422:28e4f85588019150",
+  "recomputed": { "distribution": 80, "activity": 95, "verification": 75,
+                  "maturity": 100, "liquidity": 90, "overall": 87,
+                  "rug_level": "MEDIUM", "rug_flags": ["HAS_BLACKLIST"],
+                  "badge": "MODERATE_RISK", "confidence": "HIGH" } }
+```
+
+All thirteen checks pass: the record reproduces itself from its own 29 integers.
 
 Governance cannot move a score. Weights, ladders and point tables are module
 constants, not storage. The owner sets the fee (0…0.1 GEN), pauses new scoring
