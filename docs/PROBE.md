@@ -195,7 +195,50 @@ SocialOracle reached for the same reason.
 
 ---
 
-## 8. Reproducing this
+## 8. A second visit: not every chain's `/holders` is healthy
+
+Re-probed on 2026-08-31 while running end-to-end scoring, because USDC on Base
+and USDT on Polygon both failed to score while Ethereum succeeded twice.
+
+| Chain | `/addresses/{a}` | `/tokens/{a}/holders` |
+|---|---|---|
+| ethereum | 200 | **200** |
+| arbitrum | 200 | **200** |
+| polygon | 200 | **524** (Cloudflare origin timeout) |
+| base | 200 | **500**, **500**, then **524** |
+
+The holders endpoint on Base and Polygon is broken *and slow* — the 524 arrives
+only after the origin stalls for roughly 100 seconds. Everything else on those
+hosts answers normally, including the anchor, the ABI and the transfers page.
+
+**This exposed a real bug in the contract, not just a bad upstream.** Optional
+sources were wrapped in a catch-all that turned *any* failure into "this source
+did not resolve", and `src_holders` is part of the consensus vector. A flaky
+5xx therefore made one of the agreed ordinals **node-dependent**: a validator
+that got 200 and one that got 524 produced different vectors for the same
+token, the round could not converge, and the request hung until the client gave
+up — at a cost of ~100 seconds per node per attempt.
+
+The fix is to separate the two failure kinds, which are not alike at all:
+
+- **4xx — a deterministic absence.** Every node sees the same 404, so bucketing
+  it as a missing source is safe, and the dimension rescales as designed. This
+  is the normal path for an unverified contract, whose `/smart-contracts/` is a
+  404.
+- **5xx or unparseable — a broken server.** Node-dependent by nature. This now
+  **propagates** and fails the whole request, so every node fails identically,
+  `_handle_leader_error` matches on the error class, and the network settles on
+  one clean refusal with a full refund instead of rotating forever.
+
+The consequence is honest and visible: while Blockscout's Base and Polygon
+holders endpoints are down, tokens on those chains are **refused with a refund**
+rather than scored on partial data. Ethereum and Arbitrum are unaffected.
+Refusing to answer is the correct behaviour for an oracle whose entire value is
+that two nodes cannot disagree.
+
+---
+
+## 9. Reproducing this
 
 ```bash
 genlayer deploy --contract contracts/_render_probe.py

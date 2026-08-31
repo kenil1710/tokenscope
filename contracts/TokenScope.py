@@ -1014,11 +1014,34 @@ def _owner_risk(names: list) -> int:
 
 
 def _try_json(url: str, cap: int) -> typing.Any:
-    """An OPTIONAL source. None means 'this document did not resolve', and the
-    caller rescales its dimension rather than scoring it zero. Only the anchor
-    uses _get_json directly, because only the anchor is mandatory."""
+    """An OPTIONAL source, with a hard distinction between two kinds of failure.
+
+    None means the document GENUINELY DOES NOT EXIST - a 404. Every node sees
+    that identically, so bucketing it as a missing source is deterministic and
+    the caller rescales its dimension.
+
+    A 5xx is not that, and must not be treated as that. It means the server is
+    broken right now, and two nodes seconds apart can legitimately get 500 and
+    200 - which would put a NODE-DEPENDENT value into the consensus vector and
+    make the round un-agreeable. base.blockscout.com and polygon.blockscout.com
+    do exactly this on /holders today: 500, 500, then a Cloudflare 524 after a
+    ~100 second stall (docs/PROBE.md section 9). Swallowing that produced a
+    request that could not converge and hung until the client gave up.
+
+    So a transient failure PROPAGATES and fails the whole request. Every node
+    fails the same way, `_handle_leader_error` matches on the class, and the
+    network settles on a clean refusal with a full refund in one round - rather
+    than silently scoring a token on whichever documents happened to load for
+    whichever node happened to lead."""
     try:
         return _get_json(url, cap)
+    except gl.vm.UserError as e:
+        msg = getattr(e, "message", "")
+        if not isinstance(msg, str) or msg == "":
+            msg = str(e)
+        if msg.startswith(ERR_TRANSIENT):
+            raise
+        return None
     except Exception:
         return None
 

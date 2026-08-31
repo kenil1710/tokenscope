@@ -855,6 +855,64 @@ class TestCreation(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# 4b. optional-source failure classes
+# --------------------------------------------------------------------------
+
+class TestOptionalSourceFailures(unittest.TestCase):
+    """The distinction that decides whether a round can converge at all.
+
+    A 404 is a deterministic absence: every node sees it, so bucketing it as a
+    missing source is safe. A 5xx is a broken server, and two nodes seconds
+    apart can get 500 and 200 - so degrading on it would put a node-dependent
+    value into the consensus vector. base.blockscout.com and
+    polygon.blockscout.com do exactly this on /holders today."""
+
+    def _patched(self, mod, raiser):
+        original = mod._get_json
+        mod._get_json = raiser
+        try:
+            return mod._try_json("https://example.test/x", 100)
+        finally:
+            mod._get_json = original
+
+    def test_a_404_degrades_to_none(self):
+        def not_found(_u, _c):
+            raise _UserError(M.ERR_EXTERNAL + " http 404")
+        self.assertIsNone(self._patched(M, not_found))
+
+    def test_a_5xx_propagates_and_fails_the_request(self):
+        def broken(_u, _c):
+            raise _UserError(M.ERR_TRANSIENT + " http 500")
+        with self.assertRaises(_UserError):
+            self._patched(M, broken)
+
+    def test_a_524_propagates_too(self):
+        def stalled(_u, _c):
+            raise _UserError(M.ERR_TRANSIENT + " http 524")
+        with self.assertRaises(_UserError):
+            self._patched(M, stalled)
+
+    def test_unparseable_json_propagates(self):
+        """Truncation is node-dependent for the same reason a 5xx is."""
+        def garbled(_u, _c):
+            raise _UserError(M.ERR_TRANSIENT + " unparseable json")
+        with self.assertRaises(_UserError):
+            self._patched(M, garbled)
+
+    def test_a_non_usererror_still_degrades(self):
+        def odd(_u, _c):
+            raise ValueError("something else entirely")
+        self.assertIsNone(self._patched(M, odd))
+
+    def test_a_transient_leader_error_is_agreed_on_by_class(self):
+        """Both nodes hit the broken endpoint, so both fail; the class matches
+        even though the status text need not, and the network settles on one
+        clean refusal instead of rotating forever."""
+        self.assertIn(M.ERR_TRANSIENT, "[TRANSIENT] http 500")
+        self.assertTrue("[TRANSIENT] http 524".startswith(M.ERR_TRANSIENT))
+
+
+# --------------------------------------------------------------------------
 # 5. the rubric, the rug ladder and the badge
 # --------------------------------------------------------------------------
 
@@ -1306,6 +1364,25 @@ class TestDeployableArtifact(unittest.TestCase):
                          self.A._created_features(CREATION, NOW, fb))
         self.assertEqual(fa, fb)
         self.assertEqual(M._score(fa), self.A._score(fb))
+
+    def test_optional_source_failure_classes_are_identical(self):
+        def broken(_u, _c):
+            raise _UserError(M.ERR_TRANSIENT + " http 500")
+        def not_found(_u, _c):
+            raise _UserError(M.ERR_EXTERNAL + " http 404")
+        for mod in (M, self.A):
+            original = mod._get_json
+            mod._get_json = not_found
+            try:
+                self.assertIsNone(mod._try_json("https://x.test/y", 10))
+            finally:
+                mod._get_json = original
+            mod._get_json = broken
+            try:
+                with self.assertRaises(_UserError):
+                    mod._try_json("https://x.test/y", 10)
+            finally:
+                mod._get_json = original
 
     def test_consensus_functions_are_identical(self):
         p = payload()

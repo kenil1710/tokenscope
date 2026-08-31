@@ -82,6 +82,39 @@ Scoring USDT on **Bradbury** produced `content_hash 422:d4c68f52cadab4c8` and
 `overall 86` — byte-identical to the Studionet record written minutes earlier by
 a **different validator set**. The vector, not the network, decides the score.
 
+### Comparison, leaderboards and stats — all live
+
+`compare_tokens(USDT, PEPE, ethereum)` needs no consensus round and costs
+nothing; it reads two existing records:
+
+```json
+{ "safer": "b", "reason": "overall 86 vs 87", "overall_delta": -1,
+  "dimensions": [
+    {"dimension":"distribution",  "a":70,  "b":80,  "delta":-10, "winner":"b"},
+    {"dimension":"activity",      "a":100, "b":95,  "delta":5,   "winner":"a"},
+    {"dimension":"verification",  "a":75,  "b":75,  "delta":0,   "winner":"tie"},
+    {"dimension":"maturity",      "a":100, "b":100, "delta":0,   "winner":"tie"},
+    {"dimension":"liquidity",     "a":95,  "b":90,  "delta":5,   "winner":"a"}]}
+```
+
+Both tokens sit at `MEDIUM`, so the verdict falls through to the point total. Had
+either carried a `HIGH` or `CRITICAL` finding, the rug level would have decided
+it regardless of the score.
+
+`get_safest_tokens(ethereum, 5)` ranks PEPE 1, USDT 2;
+`get_riskiest_tokens(ethereum, 5)` returns the same two in the opposite order —
+one bounded array, read from both ends.
+
+`get_stats()`:
+
+```json
+{ "tokens_tracked": 2, "total_scored": 2, "avg_overall": 86,
+  "avg_distribution": 75, "avg_activity": 97, "avg_verification": 75,
+  "avg_maturity": 100, "avg_liquidity": 92,
+  "rug_levels": {"NONE":0, "LOW":0, "MEDIUM":2, "HIGH":0, "CRITICAL":0},
+  "chains": [{"chain":"ethereum","tokens_tracked":2,"board_size":2}, ...] }
+```
+
 ## Why a feature vector
 
 Five validators each forming a 0–100 opinion of the same token produce 72, 73,
@@ -125,6 +158,9 @@ times — full findings in [`docs/PROBE.md`](docs/PROBE.md):
    5xx is `[TRANSIENT]` and fails the request; only a 4xx is read as a real
    absence. Letting a blip score a healthy token as dead is exactly the silent
    corruption this contract exists to prevent.
+
+A second visit during end-to-end testing found the sharper version of that
+lesson, and a genuine bug — see [below](#a-flaky-endpoint-is-not-a-missing-one).
 
 ## Features
 
@@ -175,6 +211,49 @@ DEX listing gate. See below.
   terms then drop and verification *rescales* — but `is_verified` still arrives
   on the anchor, so an unverified contract is never mistaken for a verified one.
 - **Leaderboards past 40 tokens per chain hold the two tails**, not the middle.
+- **Base and Polygon cannot be scored right now, and the contract says so
+  rather than guessing.** Blockscout's `/holders` endpoint on those two hosts is
+  returning 500 and Cloudflare 524 (see below). Ethereum and Arbitrum are
+  unaffected. Requests for tokens on the broken chains are **refused with a
+  refund**, not scored on partial data.
+
+### A flaky endpoint is not a missing one
+
+USDC on Base and USDT on Polygon both failed to score while Ethereum succeeded
+twice. Re-probing found the cause upstream:
+
+| Chain | `/addresses/{a}` | `/tokens/{a}/holders` |
+|---|---|---|
+| ethereum | 200 | **200** |
+| arbitrum | 200 | **200** |
+| polygon | 200 | **524** (Cloudflare origin timeout, after ~100 s) |
+| base | 200 | **500**, **500**, then **524** |
+
+But the *hang* was a bug in this contract. Optional sources were wrapped in a
+catch-all that turned any failure into "this source did not resolve" — and
+`src_holders` is part of the consensus vector. A flaky 5xx therefore made one of
+the agreed ordinals **node-dependent**: a validator that got 200 and one that
+got 524 produced different vectors for the same token, the round could not
+converge, and the request hung until the client gave up.
+
+The two failure kinds are not alike and are now separated:
+
+- **4xx — a deterministic absence.** Every node sees the same 404, so bucketing
+  it as a missing source is safe and the dimension rescales as designed. This is
+  the normal path for an unverified contract, whose `/smart-contracts/` is a 404.
+- **5xx or unparseable — a broken server.** Node-dependent by nature, so it
+  **propagates** and fails the whole request. Every node fails identically,
+  `_handle_leader_error` matches on the error class, and the network settles on
+  one clean refusal in a single round.
+
+Live, on Base, after the fix — **37 seconds**, down from a 10-minute hang:
+
+```json
+{ "status": "REJECTED", "reason": "[TRANSIENT] http 500", "refund_wei": 0 }
+```
+
+Refusing to answer is the correct behaviour for an oracle whose entire value is
+that two nodes cannot disagree.
 
 ## Where the model is used
 
@@ -280,8 +359,15 @@ once value is attached.
 ## Tests
 
 ```bash
-python3 test/test_logic.py     # 107 tests, stdlib only, no chain or network
+python3 test/test_logic.py
+# 107 tests, 310 assert statements, 3,372 assertions executed
+# stdlib only - no chain, no network, no model, no genlayer install
 ```
+
+The count is higher than the statements because several tests sweep the whole
+ordinal lattice: every feature key, over its entire declared range, asserting
+that no combination can produce an out-of-range dimension, a non-multiple of 5,
+or an unknown rug level.
 
 The suite checks three separate things:
 

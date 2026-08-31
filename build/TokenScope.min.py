@@ -641,6 +641,13 @@ def _owner_risk(names: list) -> int:
 def _try_json(url: str, cap: int) -> typing.Any:
  try:
   return _get_json(url, cap)
+ except gl.vm.UserError as e:
+  msg = getattr(e, "message", "")
+  if not isinstance(msg, str) or msg == "":
+   msg = str(e)
+  if msg.startswith(ERR_TRANSIENT):
+   raise
+  return None
  except Exception:
   return None
 def _collect(task: dict) -> dict:
