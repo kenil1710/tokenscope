@@ -228,8 +228,22 @@ export async function ensureCorrectNetwork(): Promise<void> {
   await switchToNetwork();
 }
 
-/** Explorer link for a tx hash or address on the GenLayer network. */
+/**
+ * Explorer link for a tx hash or address on the GenLayer network.
+ *
+ * Studionet is special-cased because the explorer its chain definition declares
+ * — `genlayer-explorer.vercel.app` — currently answers 503, so a link built
+ * from it is dead on arrival. Studio itself is up and is where a Studionet
+ * contract is actually inspected, so that is where the link goes. Deliberately
+ * the app root rather than a guessed `/contracts/<addr>` deep link: a
+ * single-page app returns 200 for any path, so a 200 there would not have
+ * proved the route exists, and a plausible-looking dead link is worse than an
+ * honest one.
+ *
+ * Bradbury's explorer is live and takes the normal `/address/…` form.
+ */
 export function explorerUrl(kind: "tx" | "address", value: string): string {
+  if (NETWORK === "studionet") return "https://studio.genlayer.com";
   const base = chain.blockExplorers?.default?.url?.replace(/\/$/, "") ?? "";
   return `${base}/${kind}/${value}`;
 }
