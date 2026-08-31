@@ -477,9 +477,11 @@ Three details worth knowing:
   on success but drops them on its 429s, so an exhausted rate limit reaches the
   browser as a phantom CORS error instead of the rate-limit error it is. Bradbury
   sets them on errors too, so it stays direct.
-- **Degraded chains are labelled in the UI.** Base and Polygon are shown as
-  *Source degraded* with the reason, so nobody is invited into a scan that cannot
-  settle.
+- **Data-source status lives on `/docs#chains`, not the landing page.** The
+  marketing page shows all four chains equally; the per-host status — and why a
+  degraded `/holders` endpoint means a refusal rather than a partial score — is
+  on the docs page, where someone is actually looking for it. The chain picker on
+  `/scan` still warns before a transaction is spent.
 
 ```bash
 cd frontend
