@@ -21,14 +21,29 @@ accept as collateral?*
 
 | | Studionet | Bradbury |
 |---|---|---|
-| **TokenScope** | `0x301DC59624F858B33032787873B0E76f248aD6be` | `0xf8CbC28B0Dc68aC123b46d954F6a8f5B6c9396Bc` |
-| **RiskConsumer** | `0x8501A6DAECe5C7695527D425b464eBCc0C299645` | `0x2CF70Abc62276F6FCBdd545899d57f699b6c37Ff` |
+| **TokenScope** | `0x386245fE7e8c28967f84F79eb93532b12cCa9987` | `0xA81049c078F84816611b0297C8c4365CAda118a1` |
+| **RiskConsumer** | `0x76cDC81E9dEe818b59Ee0FD198d081D33B47ea87` | `0x9d7268Ad83c89bE3d5c494a2558c748CF1BA7Ad2` |
 
 Both networks run the **same artifact** — `shasum -a 256 build/TokenScope.min.py`
-→ `93ea8a1e…`, or `genlayer code <address> | diff - build/TokenScope.min.py`.
+→ `ea11184d…`. The Studionet deployment was checked with
+`genlayer code <address> | diff - build/TokenScope.min.py`: byte-identical,
+50,382 bytes.
 
-Chains scored: **ethereum, base, arbitrum, polygon** — one Blockscout schema,
-four hosts.
+Chains supported: **ethereum, base, arbitrum, polygon** — one Blockscout schema,
+four hosts. **Ethereum and Arbitrum are scoring today**; Base and Polygon are
+blocked on a broken upstream endpoint and refuse rather than guess
+([details](#a-flaky-endpoint-is-not-a-missing-one)).
+
+| Token | Chain | Address | Overall | Rug flags | Confidence |
+|---|---|---|---:|---|---|
+| USDT | ethereum | `0xdAC17F95…31ec7` | **86** | MINTABLE, PAUSABLE, HAS_BLACKLIST | HIGH |
+| PEPE | ethereum | `0x69825081…11933` | **87** | HAS_BLACKLIST | HIGH |
+| USDT0 | arbitrum | `0xFd086bC7…FCbb9` | **88** | UPGRADEABLE_PROXY | HIGH |
+
+All three with `sources_ok: address,contract,creation,holders,transfers` — every
+source resolved. USDT0's `verification_score` is 65 against Ethereum USDT's 75,
+because it is a proxy and `proxy_v` drops a rung. Same rubric, three different
+risk shapes.
 
 ```bash
 genlayer call  <oracle> get_config
@@ -76,11 +91,34 @@ The agreed feature vector behind that score (`get_evidence`):
 
 29 small integers. That is the entire consensus surface.
 
-### Cross-network determinism
+### Cross-network determinism — and what it does and does not claim
 
 Scoring USDT on **Bradbury** produced `content_hash 422:d4c68f52cadab4c8` and
 `overall 86` — byte-identical to the Studionet record written minutes earlier by
 a **different validator set**. The vector, not the network, decides the score.
+
+Re-scoring the same token on Bradbury an hour later produced a **different**
+hash, `422:41a76eee24bba743`, and the **same** `overall 86`. Diffing the two
+evidence vectors, exactly one of the 29 ordinals moved:
+
+```
+supply_d: 2  ->  3      # supply held outside the top 50 crossed the 40% rung
+```
+
+That is the design working, not failing, and it is worth being precise about
+what determinism means here:
+
+- **Within a consensus round**, every validator must produce the identical
+  vector. That is enforced with no tolerance, and it is what makes a score
+  agreeable at all.
+- **Across time**, a token's real distribution moves, and a ladder rung
+  eventually gets crossed. The record is a function of the token's state at
+  `now`, not a constant.
+
+The quantization is what kept `overall` at 86 through that drift — `supply_d` is
+worth 4 of liquidity's 100 points, which the step of 5 absorbed. A design that
+compared raw percentages would have reported a "change" here. This one reports
+that nothing material happened, which is the truth.
 
 ### Comparison, leaderboards and stats — all live
 
@@ -211,11 +249,13 @@ DEX listing gate. See below.
   terms then drop and verification *rescales* — but `is_verified` still arrives
   on the anchor, so an unverified contract is never mistaken for a verified one.
 - **Leaderboards past 40 tokens per chain hold the two tails**, not the middle.
-- **Base and Polygon cannot be scored right now, and the contract says so
-  rather than guessing.** Blockscout's `/holders` endpoint on those two hosts is
-  returning 500 and Cloudflare 524 (see below). Ethereum and Arbitrum are
-  unaffected. Requests for tokens on the broken chains are **refused with a
-  refund**, not scored on partial data.
+- **Base and Polygon cannot be scored right now**, because Blockscout's
+  `/holders` endpoint on those two hosts is returning 500 / Cloudflare 524 (see
+  below). Base refuses cleanly in ~37 s; Polygon's round outlives the CLI
+  timeout because its 524 arrives only after a ~100 s stall. **Neither ever
+  writes a score** — the tokens stay `UNSCORED` and `get_stats` shows zero
+  tracked on both chains. Ethereum and Arbitrum are unaffected and fully
+  working.
 
 ### A flaky endpoint is not a missing one
 
@@ -251,6 +291,17 @@ Live, on Base, after the fix — **37 seconds**, down from a 10-minute hang:
 ```json
 { "status": "REJECTED", "reason": "[TRANSIENT] http 500", "refund_wei": 0 }
 ```
+
+**Polygon behaves differently, and the difference is upstream, not here.** Base
+fails *fast* (an immediate 500), so the round refuses in seconds. Polygon
+*stalls* — Cloudflare holds the connection ~100 s before returning 524 — so each
+node waits out that stall and the round does not settle within the CLI's
+patience. The contract cannot shorten someone else's timeout.
+
+What matters is that **neither case ever writes a wrong score.** After every
+attempt above, `get_stats` reports `polygon: 0 tokens_tracked`, `base: 0`, and
+the tokens read back `UNSCORED`. The failure mode is a slow or unsettled
+request, never a corrupted record.
 
 Refusing to answer is the correct behaviour for an oracle whose entire value is
 that two nodes cannot disagree.
