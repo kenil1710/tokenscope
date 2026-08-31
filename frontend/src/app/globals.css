@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/*
+ * TokenScope design tokens.
+ *
+ * A security console, not a trading app: light, high-contrast, and structured
+ * so the eye lands on the verdict before the ornament. The palette is
+ * deliberately narrow - one trust colour, three risk colours - because every
+ * additional hue costs the risk colours some of their meaning.
+ */
+@theme {
+  /* Trust. Deep navy, used for structure and the primary action. */
+  --color-ink-50:  #f4f7fb;
+  --color-ink-100: #e5ecf5;
+  --color-ink-200: #c6d6e8;
+  --color-ink-300: #94b0cf;
+  --color-ink-400: #5b81ad;
+  --color-ink-500: #38618c;
+  --color-ink-600: #1E3A5F;
+  --color-ink-700: #1a3253;
+  --color-ink-800: #142640;
+  --color-ink-900: #0e1b2e;
+
+  /* Risk. These three carry the meaning; nothing else may use them. */
+  --color-safe-50:  #ecfdf5;
+  --color-safe-100: #d1fae5;
+  --color-safe-500: #10B981;
+  --color-safe-600: #059669;
+  --color-safe-700: #047857;
+
+  --color-warn-50:  #fffbeb;
+  --color-warn-100: #fef3c7;
+  --color-warn-500: #F59E0B;
+  --color-warn-600: #d97706;
+  --color-warn-700: #b45309;
+
+  --color-danger-50:  #fef2f2;
+  --color-danger-100: #fee2e2;
+  --color-danger-500: #EF4444;
+  --color-danger-600: #dc2626;
+  --color-danger-700: #b91c1c;
+
+  /* Ground */
+  --color-canvas: #f6f8fb;
+  --color-surface: #ffffff;
+  --color-hairline: #e3e9f2;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --shadow-card: 0 1px 2px rgb(16 33 56 / 0.04), 0 4px 16px rgb(16 33 56 / 0.06);
+  --shadow-lift: 0 2px 4px rgb(16 33 56 / 0.05), 0 12px 32px rgb(16 33 56 / 0.10);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A faint grid, the way a monitoring console has one. Sits behind everything
+   and never competes with the cards on top of it. */
+.grid-field {
+  background-image:
+    linear-gradient(to right, rgb(30 58 95 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(30 58 95 / 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.grid-field-fade {
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+/* Focus ring: one definition, so every interactive element agrees. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ink-500);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: var(--color-ink-200);
+  color: var(--color-ink-900);
+}
+
+/* Respect a reduced-motion preference everywhere, including framer-motion's
+   inline transforms, without having to remember it per component. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Numeric columns should not jitter as digits change during an animation. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
