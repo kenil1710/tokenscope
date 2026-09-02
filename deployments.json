@@ -80,7 +80,7 @@
       "superseded": {
         "TokenScope": "0xA81049c078F84816611b0297C8c4365CAda118a1",
         "RiskConsumer": "0x9d7268Ad83c89bE3d5c494a2558c748CF1BA7Ad2",
-        "why_superseded": "Predates the watchlist. Its scores are still readable, but it has no add_to_watchlist / remove_from_watchlist / get_watchlist, so the app points at the deployment below."
+        "why_superseded": "Predates the watchlist. Its scores are still readable, but it has no add_to_watchlist / remove_from_watchlist / get_watchlist, so the app points at the current TokenScope address in this same block."
       }
     }
   },
