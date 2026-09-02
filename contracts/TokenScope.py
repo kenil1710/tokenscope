@@ -60,6 +60,7 @@ MAX_FEE_WEI = 10**17              # owner ceiling: 0.1 GEN
 RATE_LIMIT_SECONDS = 300          # per wallet
 TOKEN_COOLDOWN = 900              # per token, per chain
 MAX_TOKENS = 2000
+MAX_WATCHLIST = 20               # per owner
 HISTORY_CAP = 12
 BOARD_K = 40                      # per chain, both tails preserved
 PENDING_TTL = 600
@@ -1214,6 +1215,25 @@ class ChainBoard:
     used: u32
 
 
+@allow_storage
+@dataclass
+class WatchEntry:
+    key: str
+    token: str
+    chain: str
+    added_at: u64
+    baseline: u32
+    baseline_seq: u32
+
+
+@allow_storage
+@dataclass
+class Watchlist:
+    owner: str
+    entries: DynArray[WatchEntry]
+    used: u32
+
+
 @gl.evm.contract_interface
 class _Payee:
     """Bare payee handle. Refunds and withdrawals are plain value transfers, so
@@ -1238,6 +1258,7 @@ class TokenScope(gl.Contract):
 
     boards: TreeMap[str, ChainBoard]
     chain_count: TreeMap[str, u32]
+    watchlists: TreeMap[str, Watchlist]
 
     last_request: TreeMap[Address, u64]
     pending: TreeMap[str, u64]
@@ -2056,6 +2077,7 @@ class TokenScope(gl.Contract):
             "token_cooldown_seconds": TOKEN_COOLDOWN,
             "history_cap": HISTORY_CAP,
             "max_tokens": MAX_TOKENS,
+            "max_watchlist": MAX_WATCHLIST,
             "leaderboard_size": BOARD_K,
             "model_influence_points": "15 of 100 verification points = 3 of "
                                       "100 overall",
@@ -2081,6 +2103,149 @@ class TokenScope(gl.Contract):
         for i in range(total - n, total):
             out.append(str(self.gov_log[i]))
         return {"total": total, "returned": len(out), "entries": out}
+
+    # --- watchlist. Free, and deliberately: watching is storage and nothing
+    # else - no fetch, no validator work, no consensus round - so there is
+    # nothing to charge for. The cap is a constant for the same reason the rate
+    # limiter is: an owner who can raise it can also let one address turn
+    # per-owner storage into unbounded storage.
+
+    def _watch_slot(self, wl: Watchlist, key: str) -> int:
+        for i in range(int(wl.used)):
+            if str(wl.entries[i].key) == key:
+                return i
+        return -1
+
+    @gl.public.write
+    def add_to_watchlist(self, token_address: str, chain: str) -> typing.Any:
+        """Watch a token under the caller's own address.
+
+        The overall score AT THE MOMENT OF ADDING is stored beside the entry, so
+        get_watchlist reports movement against what the watcher actually saw.
+        Comparing the two newest history slots instead would answer a different
+        question - did the last two rounds differ - and would answer it wrong
+        for anyone who started watching between them.
+
+        An unscored token is a legitimate thing to watch, and the commonest
+        reason to watch one; it is stored with a zero baseline and reported as
+        UNSCORED until a round runs."""
+        ch, token = self._pair(token_address, chain)
+        who = gl.message.sender_address.as_hex.lower()
+        key = _key(ch, token)
+        wl = self.watchlists.get_or_insert_default(who)
+        wl.owner = who
+        if self._watch_slot(wl, key) >= 0:
+            return {"status": "ALREADY_WATCHED", "key": key,
+                    "count": int(wl.used), "capacity": MAX_WATCHLIST}
+        used = int(wl.used)
+        if used >= MAX_WATCHLIST:
+            raise gl.vm.UserError(
+                ERR_EXPECTED + " watchlist is full at " + str(MAX_WATCHLIST)
+                + " tokens; remove one first")
+        rec = self._find(ch, token)
+        if len(wl.entries) <= used:
+            e = wl.entries.append_new_get()
+        else:
+            e = wl.entries[used]
+        e.key = key
+        e.token = token
+        e.chain = ch
+        e.added_at = u64(self._now())
+        e.baseline = u32(int(rec.overall_score) if rec is not None else 0)
+        e.baseline_seq = u32(int(rec.seq) if rec is not None else 0)
+        wl.used = u32(used + 1)
+        return {"status": "OK", "key": key, "count": used + 1,
+                "capacity": MAX_WATCHLIST, "scored": rec is not None,
+                "baseline_overall": int(e.baseline)}
+
+    @gl.public.write
+    def remove_from_watchlist(self, token_address: str,
+                              chain: str) -> typing.Any:
+        """Compacts in place and decrements `used`, the same idiom the
+        leaderboard uses: the DynArray keeps its length, so nothing here depends
+        on removal semantics, and a freed slot is overwritten by the next add
+        rather than left readable."""
+        ch, token = self._pair(token_address, chain)
+        who = gl.message.sender_address.as_hex.lower()
+        key = _key(ch, token)
+        if who not in self.watchlists:
+            raise gl.vm.UserError(ERR_EXPECTED + " your watchlist is empty")
+        wl = self.watchlists[who]
+        at = self._watch_slot(wl, key)
+        if at < 0:
+            raise gl.vm.UserError(ERR_EXPECTED + " " + key + " is not watched")
+        used = int(wl.used)
+        for i in range(at, used - 1):
+            nxt = wl.entries[i + 1]
+            cur = wl.entries[i]
+            cur.key = str(nxt.key)
+            cur.token = str(nxt.token)
+            cur.chain = str(nxt.chain)
+            cur.added_at = u64(int(nxt.added_at))
+            cur.baseline = u32(int(nxt.baseline))
+            cur.baseline_seq = u32(int(nxt.baseline_seq))
+        wl.used = u32(used - 1)
+        return {"status": "OK", "key": key, "count": used - 1,
+                "capacity": MAX_WATCHLIST}
+
+    @gl.public.view
+    def get_watchlist(self, owner_address: str) -> typing.Any:
+        """Every watched token with its CURRENT score, and how far that score
+        has moved since it was added.
+
+        A token that has never been scored comes back `scored: false` rather
+        than being dropped from the list - being told it is still unscored is
+        the whole point of watching one."""
+        who = _norm_token(owner_address)
+        now = self._now()
+        rows = []
+        moved = 0
+        unscored = 0
+        if who in self.watchlists:
+            wl = self.watchlists[who]
+            for i in range(int(wl.used)):
+                e = wl.entries[i]
+                ch = str(e.chain)
+                token = str(e.token)
+                base = int(e.baseline)
+                base_seq = int(e.baseline_seq)
+                row = {
+                    "key": str(e.key),
+                    "chain": ch,
+                    "token_address": token,
+                    "added_at": int(e.added_at),
+                    "baseline_overall": base,
+                    "baseline_seq": base_seq,
+                    "explorer_url": _explorer_url(ch, token),
+                }
+                rec = self._find(ch, token)
+                if rec is None:
+                    row["scored"] = False
+                    row["direction"] = "UNSCORED"
+                    unscored += 1
+                else:
+                    view = self._view(rec, now)
+                    for field in ("score_id", "symbol", "name",
+                                  "overall_score", "rug_level", "rug_flags",
+                                  "badge", "confidence", "scored_at",
+                                  "age_seconds", "seq"):
+                        row[field] = view[field]
+                    delta = int(rec.overall_score) - base
+                    row["scored"] = True
+                    row["delta"] = delta
+                    if base_seq == 0:
+                        row["direction"] = "NEW"
+                    elif delta > 0:
+                        row["direction"] = "UP"
+                        moved += 1
+                    elif delta < 0:
+                        row["direction"] = "DOWN"
+                        moved += 1
+                    else:
+                        row["direction"] = "SAME"
+                rows.append(row)
+        return {"owner": who, "count": len(rows), "capacity": MAX_WATCHLIST,
+                "moved": moved, "unscored": unscored, "tokens": rows}
 
     # --- refunds
 

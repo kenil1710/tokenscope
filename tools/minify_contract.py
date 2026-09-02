@@ -23,9 +23,17 @@ What it removes:
   - trailing whitespace
   - indentation beyond one space per level
 
+What it rewrites:
+  - repeated string literals, bound once to a short module-level name. The
+    VALUE is never altered — a name is substituted for a literal that evaluates
+    to exactly the same string — so this is weaker than the identifier renaming
+    below, which is still refused.
+
 What it never touches:
   - line 1, byte for byte
-  - any string that is not a docstring — prompt templates included
+  - the value of any string, prompt templates included
+  - annotations, f-string fragments or `match` patterns, where a name and a
+    literal do not mean the same thing
   - the order or content of any statement
 """
 
@@ -33,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import io
 import sys
 import tokenize
@@ -155,6 +164,162 @@ def _reindent(source: str, spaces_per_level: int) -> str:
     return "\n".join(out)
 
 
+# --------------------------------------------------------------------------
+# string pooling
+# --------------------------------------------------------------------------
+
+
+def _pool_strings(source: str) -> str:
+    """Binds repeated string literals to short module-level names.
+
+    This contract names things well, and it pays for that in bytes: the same
+    twenty-odd field names appear in every view method, so `"token_address"`
+    alone costs 225 bytes across fifteen occurrences. Bradbury refuses a deploy
+    whose calldata crosses a pubdata ceiling measured (2026-09-02) between
+    53,000 and 53,700 bytes, and those field names are pure repetition.
+
+    Semantics-preserving, and the reason is worth stating precisely: this pass
+    never alters a string's VALUE. It binds the value to a name and substitutes
+    the name, so `d["token_address"]` and `d[_a]` index the same key with the
+    same object. That is a strictly weaker transformation than the identifier
+    renaming this file still refuses to do.
+
+    Four exclusions, each of which would otherwise be a silent behaviour change:
+
+    - **Annotations.** GenVM reads the annotation source to build the ABI and
+      the storage layout, so `-> typing.Any` and `x: str` must survive as
+      written.
+    - **f-string pieces.** A `Constant` inside a `JoinedStr` is a fragment of a
+      larger expression, not a literal of its own.
+    - **`match` case patterns.** A bare name in a pattern CAPTURES rather than
+      compares, which would turn every case into a wildcard. This contract has
+      no `match`, but a future one might.
+    - **Docstrings**, which are already gone by the time this runs.
+
+    Names are two characters and are checked against every identifier in the
+    module; a collision with a function-local would shadow the pool binding and
+    raise `UnboundLocalError` at the worst possible moment.
+    """
+    tree = ast.parse(source)
+
+    # Every identifier that exists anywhere, so a pool name can never shadow
+    # or be shadowed by one.
+    taken: set[str] = set(dir(builtins))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            taken.add(node.id)
+        elif isinstance(node, ast.arg):
+            taken.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            taken.add(node.name)
+        elif isinstance(node, ast.Attribute):
+            taken.add(node.attr)
+        elif isinstance(node, ast.alias):
+            taken.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            taken.update(node.names)
+
+    excluded: set[int] = set()
+
+    def exclude(node: ast.AST | None) -> None:
+        if node is None:
+            return
+        for child in ast.walk(node):
+            excluded.add(id(child))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign):
+            exclude(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            exclude(node.returns)
+            arguments = node.args
+            for argument in (
+                list(arguments.posonlyargs)
+                + list(arguments.args)
+                + list(arguments.kwonlyargs)
+                + [arguments.vararg, arguments.kwarg]
+            ):
+                if argument is not None:
+                    exclude(argument.annotation)
+        elif isinstance(node, ast.JoinedStr):
+            exclude(node)
+        elif isinstance(node, ast.MatchValue):
+            exclude(node)
+
+    # Candidate occurrences, by value.
+    sites: dict[str, list[ast.Constant]] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in excluded
+            and node.end_lineno is not None
+        ):
+            sites.setdefault(node.value, []).append(node)
+
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    names = [f"_{a}" for a in alphabet]
+    names += [f"_{a}{b}" for a in alphabet for b in alphabet]
+    names = [name for name in names if name not in taken]
+
+    # Longest, most repeated first, so the shortest names go where they pay
+    # most. A literal only joins the pool if it actually saves bytes: the
+    # binding itself costs `name = <literal>\n`.
+    def gain(value: str, count: int, width: int) -> int:
+        quoted = len(repr(value))
+        return count * quoted - count * width - (width + 3 + quoted + 1)
+
+    ordered = sorted(
+        ((value, nodes) for value, nodes in sites.items() if len(nodes) > 1),
+        key=lambda item: -(len(item[0]) * len(item[1])),
+    )
+
+    pool: list[tuple[str, str]] = []
+    replacements: list[tuple[ast.Constant, str]] = []
+    for value, nodes in ordered:
+        if not names:
+            break
+        width = len(names[0])
+        if gain(value, len(nodes), width) <= 0:
+            continue
+        name = names.pop(0)
+        pool.append((name, value))
+        replacements.extend((node, name) for node in nodes)
+
+    if not pool:
+        return source
+
+    lines = source.split("\n")
+
+    # Rewrite spans back to front so earlier positions stay valid. A literal
+    # spanning several lines collapses to one; the blank remainder is dropped
+    # by the blank-line pass downstream.
+    def span_key(item: tuple[ast.Constant, str]) -> tuple[int, int]:
+        node = item[0]
+        return (node.end_lineno or node.lineno, node.end_col_offset or 0)
+
+    for node, name in sorted(replacements, key=span_key, reverse=True):
+        start_row, start_col = node.lineno - 1, node.col_offset
+        end_row, end_col = (node.end_lineno or node.lineno) - 1, node.end_col_offset or 0
+        head = lines[start_row][:start_col]
+        tail = lines[end_row][end_col:]
+        lines[start_row : end_row + 1] = [head + name + tail]
+
+    # The bindings go after the last top-level import: class bodies run at
+    # import time, so a default argument or a field default must find its pool
+    # name already bound.
+    rebuilt = "\n".join(lines)
+    anchor = 0
+    for statement in ast.parse(rebuilt).body:
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            anchor = statement.end_lineno or statement.lineno
+        else:
+            break
+
+    bindings = [f"{name} = {value!r}" for name, value in pool]
+    out = rebuilt.split("\n")
+    return "\n".join(out[:anchor] + bindings + out[anchor:])
+
 def minify(source: str, spaces_per_level: int = 1) -> str:
     header, _, rest = source.partition("\n")
     if not header.startswith("#"):
@@ -175,6 +340,11 @@ def minify(source: str, spaces_per_level: int = 1) -> str:
     stage = "\n".join(kept)
 
     stage = _strip_comments(stage)
+
+    # Pooling runs here: after docstrings and comments are gone, so neither can
+    # be pooled, and before the layout passes, whose line bookkeeping this
+    # would otherwise invalidate.
+    stage = _pool_strings(stage)
 
     # Lines lying INSIDE a multi-line string are content, not layout.
     #

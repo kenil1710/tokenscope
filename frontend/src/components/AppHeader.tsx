@@ -10,9 +10,11 @@ import { NETWORK_LABEL } from "@/lib/genlayer";
 
 const NAV = [
   { href: "/scan", label: "Scan" },
+  { href: "/portfolio", label: "Portfolio" },
+  { href: "/watchlist", label: "Watchlist" },
   { href: "/explore", label: "Explore" },
   { href: "/compare", label: "Compare" },
-  { href: "/docs", label: "How it works" },
+  { href: "/docs", label: "Docs" },
 ];
 
 export function AppHeader({ showWallet = true }: { showWallet?: boolean }) {
@@ -29,7 +31,7 @@ export function AppHeader({ showWallet = true }: { showWallet?: boolean }) {
           </span>
         </Link>
 
-        <nav className="ml-4 hidden items-center gap-1 md:flex">
+        <nav className="ml-4 hidden items-center gap-0.5 lg:flex">
           {NAV.map((item) => {
             const active =
               pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -37,7 +39,7 @@ export function AppHeader({ showWallet = true }: { showWallet?: boolean }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                className={`rounded-lg px-2.5 py-2 text-sm font-medium transition ${
                   active
                     ? "bg-ink-50 text-ink-900"
                     : "text-ink-500 hover:bg-ink-50 hover:text-ink-800"
@@ -68,7 +70,7 @@ export function AppHeader({ showWallet = true }: { showWallet?: boolean }) {
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="rounded-lg p-2 text-ink-600 transition hover:bg-ink-50 md:hidden"
+            className="rounded-lg p-2 text-ink-600 transition hover:bg-ink-50 lg:hidden"
             aria-label={open ? "Close menu" : "Open menu"}
             aria-expanded={open}
           >
@@ -78,7 +80,7 @@ export function AppHeader({ showWallet = true }: { showWallet?: boolean }) {
       </div>
 
       {open ? (
-        <div className="border-t border-hairline bg-surface px-4 py-3 md:hidden">
+        <div className="border-t border-hairline bg-surface px-4 py-3 lg:hidden">
           <nav className="flex flex-col gap-1">
             {NAV.map((item) => (
               <Link
