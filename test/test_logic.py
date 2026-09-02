@@ -40,11 +40,17 @@ ARTIFACT = ROOT / "build" / "TokenScope.min.py"
 CONSUMER = ROOT / "contracts" / "RiskConsumer.py"
 CONSUMER_ARTIFACT = ROOT / "build" / "RiskConsumer.min.py"
 
-# A guard-rail against unbounded growth, not a cliff. AuditCourt's note put the
-# runner limit at 48 KB; that is stale - this artifact deployed to Bradbury at
-# 50,146 bytes (0xeE5B4E9a957A6409085e829f2a809f47676FD875), so the budget is
-# set above the measured-good size rather than below it.
-SIZE_BUDGET = 56 * 1024
+# The deploy ceiling, measured rather than assumed.
+#
+# AuditCourt's note put the runner limit at 48 KB. That is stale, but a ceiling
+# does exist and this contract found it by walking into it: at 54,325 bytes
+# Bradbury refused the deploy with `BlockPubdataLimitReached`. Padded probe
+# contracts then bracketed it - 52,000 and 53,000 deployed, 53,700 did not.
+#
+# The budget is 53,000 and not 53,700 because it is a BLOCK pubdata limit, so
+# what else is in the block is not ours to control. This is a cliff, not a
+# guard-rail: past it the artifact does not deploy at all.
+SIZE_BUDGET = 53_000
 
 
 # --------------------------------------------------------------------------
@@ -1972,10 +1978,14 @@ class TestStringPooling(unittest.TestCase):
 
     def test_the_artifact_is_inside_the_deploy_ceiling(self):
         """Measured on Bradbury, 2026-09-02: 53,000 bytes deployed, 53,700 was
-        refused with BlockPubdataLimitReached. The budget below sits under the
-        smaller of the two with room to spare, because the limit is a BLOCK
-        limit and what else is in the block is not ours to control."""
-        self.assertLessEqual(len(ARTIFACT.read_bytes()), 53_000)
+        refused with BlockPubdataLimitReached. Pooling exists to keep the
+        artifact under SIZE_BUDGET, so the two are checked together."""
+        size = len(ARTIFACT.read_bytes())
+        self.assertLessEqual(size, SIZE_BUDGET)
+        # And the consumer, which shares the same ceiling.
+        if CONSUMER_ARTIFACT.exists():
+            self.assertLessEqual(len(CONSUMER_ARTIFACT.read_bytes()),
+                                 SIZE_BUDGET)
 
 
 class TestConsumerArtifact(unittest.TestCase):
