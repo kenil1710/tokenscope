@@ -20,34 +20,56 @@ accept as collateral?*
 ## Live
 
 **Web app: [tokenscope-two.vercel.app](https://tokenscope-two.vercel.app)** — scan a
-token, browse the registry, compare two tokens, and re-verify any score on-chain.
-Runs against Bradbury; `frontend/` builds against either network.
+token, rate a whole wallet, keep an on-chain watchlist, browse the registry,
+compare two tokens, and re-verify any score on-chain. Runs against Bradbury;
+`frontend/` builds against either network.
 
 | | Studionet | Bradbury |
 |---|---|---|
-| **TokenScope** | `0x386245fE7e8c28967f84F79eb93532b12cCa9987` | `0xA81049c078F84816611b0297C8c4365CAda118a1` |
-| **RiskConsumer** | `0x76cDC81E9dEe818b59Ee0FD198d081D33B47ea87` | `0x9d7268Ad83c89bE3d5c494a2558c748CF1BA7Ad2` |
+| **TokenScope** | `0xaC6B3575D82825533cA7E35fE8C57c9075b74E95` | `0xbAAF6f0151D728984445fc42edAC84e13241d4E6` |
+| **RiskConsumer** | `0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28` | `0x9DbdC862e5A35AC0126cd47d4B105E679A2Dd9ee` |
 
 Both networks run the **same artifact** — `shasum -a 256 build/TokenScope.min.py`
-→ `ea11184d…`. The Studionet deployment was checked with
-`genlayer code <address> | diff - build/TokenScope.min.py`: byte-identical,
-50,382 bytes.
+→ `3706a8a2…`, 52,070 bytes. Verify any deployment with
+`genlayer code <address> | diff - build/TokenScope.min.py`.
 
 Chains supported: **ethereum, base, arbitrum, polygon** — one Blockscout schema,
 four hosts. **Ethereum and Arbitrum are scoring today**; Base and Polygon are
 blocked on a broken upstream endpoint and refuse rather than guess
 ([details](#a-flaky-endpoint-is-not-a-missing-one)).
 
-| Token | Chain | Address | Overall | Rug flags | Confidence |
-|---|---|---|---:|---|---|
-| USDT | ethereum | `0xdAC17F95…31ec7` | **86** | MINTABLE, PAUSABLE, HAS_BLACKLIST | HIGH |
-| PEPE | ethereum | `0x69825081…11933` | **87** | HAS_BLACKLIST | HIGH |
-| USDT0 | arbitrum | `0xFd086bC7…FCbb9` | **88** | UPGRADEABLE_PROXY | HIGH |
+Scored on the live Bradbury deployment:
+
+| Token | Chain | Address | Overall | Content hash | Rug flags | Confidence |
+|---|---|---|---:|---|---|---|
+| USDT | ethereum | `0xdAC17F95…31ec7` | **86** | `422:41a76eee24bba743` | MINTABLE, PAUSABLE, HAS_BLACKLIST | HIGH |
+| PEPE | ethereum | `0x69825081…11933` | **87** | `422:28e4f85588019150` | HAS_BLACKLIST | HIGH |
+| USDT0 | arbitrum | `0xFd086bC7…FCbb9` | **89** | `423:96852a8e3bafa0b8` | UPGRADEABLE_PROXY | HIGH |
 
 All three with `sources_ok: address,contract,creation,holders,transfers` — every
-source resolved. USDT0's `verification_score` is 65 against Ethereum USDT's 75,
-because it is a proxy and `proxy_v` drops a rung. Same rubric, three different
-risk shapes.
+source resolved. PEPE's `distribution_score` is 80 against USDT's 70, and
+USDT0's `verification_score` is 65 against Ethereum USDT's 75 because it is a
+proxy and `proxy_v` drops a rung. Same rubric, three different risk shapes.
+
+The USDT hash above is worth a second look. `422:41a76eee24bba743` is the hash
+the **pre-pooling** artifact produced on Bradbury on 2026-08-31, and it is what
+the new deployment produced on 2026-09-02 — and what Studionet produced
+independently minutes later, on a different network with a different validator
+set. Rewriting 2,255 bytes of the deployed source moved none of the 29 agreed
+ordinals, which is the only claim a hash like that can make and the one worth
+making.
+
+**Arbitrum needed retries, and that is worth saying out loud.** Its `/holders`
+answers 200 but takes ~7.5s for 25 KB, and five sequential fetches at that
+latency can outrun the leader's budget — several rounds came back
+`LEADER_TIMEOUT` before one settled. A timeout writes nothing, so the failure
+mode is "ask again", not "a wrong score". That is the same rule Base and Polygon
+hit harder ([details](#a-flaky-endpoint-is-not-a-missing-one)).
+
+USDT0 also moved: **88 on the previous deployment, 89 on this one**, hash
+`422:…` → `423:…`. One ordinal crossed a rung between the two scans — the sum in
+the hash prefix went from 422 to 423 — which is exactly what a token's real
+distribution doing something is supposed to look like.
 
 ```bash
 genlayer call  <oracle> get_config
@@ -235,6 +257,18 @@ a pure function of the latest score and its rug level.
 **Comparison** — `compare_tokens(a, b, chain)` gives a side-by-side on all five
 dimensions with a winner per dimension. A rug finding outranks a point total.
 
+**Watchlist** — `add_to_watchlist` / `remove_from_watchlist` / `get_watchlist`,
+up to 20 tokens per address, stored in the contract rather than in a browser.
+Free, and deliberately: watching is storage and nothing else — no fetch, no
+validator work, no consensus round — so there is nothing to charge for.
+
+Each entry keeps the overall score **as it stood when the token was added**, so
+`get_watchlist` reports movement against what the watcher actually saw.
+Comparing the two newest history slots instead would answer a different question
+— *did the last two rounds differ* — and answer it wrong for anyone who started
+watching between them. An unscored token stays in the list as `UNSCORED` rather
+than being dropped; being told it is still unscored is the point of watching one.
+
 **Composability** — [`contracts/RiskConsumer.py`](contracts/RiskConsumer.py), a
 DEX listing gate. See below.
 
@@ -415,7 +449,7 @@ once value is attached.
 
 ```bash
 python3 test/test_logic.py
-# 107 tests, 310 assert statements, 3,372 assertions executed
+# 139 tests, 388 assert statements, 4,271 assertions executed
 # stdlib only - no chain, no network, no model, no genlayer install
 ```
 
@@ -424,7 +458,7 @@ ordinal lattice: every feature key, over its entire declared range, asserting
 that no combination can produce an out-of-range dimension, a non-multiple of 5,
 or an unknown rug level.
 
-The suite checks three separate things:
+The suite checks four separate things:
 
 1. **The pure logic** — ladders, rubric, rug ladder, badges, the consensus rule,
    address handling, and every extraction function run against the bodies the
@@ -436,7 +470,16 @@ The suite checks three separate things:
    catches it in a millisecond; a deploy catches it in ten minutes.
 3. **Artifact parity** — the whole battery is re-run through
    `build/TokenScope.min.py` and asserted identical. The minified file is what
-   actually deploys, so "the source is correct" is only half a claim.
+   actually deploys, so "the source is correct" is only half a claim. Since the
+   minifier started pooling string literals, that parity check is doing real
+   work: `test_scoring_is_identical_across_the_lattice` sweeps every feature key
+   over its entire declared range through *both* files.
+4. **The watchlist, run rather than reasoned about.** It lives in class methods
+   over `TreeMap[str, Watchlist]` and `DynArray[WatchEntry]`, which no static
+   check can prove right, so the suite execs the whole contract against Python
+   stand-ins for the storage primitives and drives the real methods — add,
+   re-add, remove from the middle, fill to capacity, and the same battery again
+   through the artifact.
 
 ### A bug the tests did not catch, and now do
 
@@ -464,19 +507,28 @@ trading dashboard.
 |---|---|
 | `/` | Marketing. No wallet. Stats server-rendered from the live contract. |
 | `/scan` | Submit an address and chain, watch the consensus round, read the result. |
-| `/token/[address]` | Full breakdown: five dimension bars, rug findings with plain-English consequences, score history, the agreed 29-ordinal evidence vector, and a **Re-verify on-chain** button that calls `verify_risk`. |
+| `/token/[address]` | Full breakdown: five dimension bars, rug findings with plain-English consequences, an interactive score-history chart, the agreed 29-ordinal evidence vector, and a **Re-verify on-chain** button that calls `verify_risk`. |
+| `/portfolio` | Every ERC-20 a wallet holds, joined to the oracle's registry: value by verdict, a value-weighted risk score, and the holdings carrying a rug finding. Needs no wallet connection — balances are public. |
+| `/watchlist` | The on-chain watchlist, with each token's movement against the score it had when it was added. |
 | `/explore` | Every scored token, with per-chain safest/riskiest leaderboards and a rug-warning filter. |
-| `/compare` | Two tokens side by side across all five dimensions, with the verdict and why. |
+| `/compare` | Two tokens side by side across all five dimensions, with the verdict, the margin and the dimension tally. |
 | `/docs` | What each dimension measures, how rug detection reads the ABI, and the `require_safe` integration. |
+| `/docs/api` | Full developer reference: every public method, working examples in genlayer-js, the CLI, Python and raw JSON-RPC, response shapes, and the limits. |
 
 Three details worth knowing:
 
-- **Reads need no wallet.** Only running a *new* scan does. The landing page never
-  touches one.
+- **Reads need no wallet.** Only a *new* scan and a watchlist write do — and the
+  landing page and `/portfolio` never touch one. `/portfolio` will happily rate an
+  address you do not control, because balances are public data.
 - **`/api/rpc` is a same-origin relay for Studionet.** Studio serves CORS headers
   on success but drops them on its 429s, so an exhausted rate limit reaches the
   browser as a phantom CORS error instead of the rate-limit error it is. Bradbury
   sets them on errors too, so it stays direct.
+- **The score-history chart pins its y-axis to 0–100**, never to the data. An
+  auto-fitted axis turns a three-point wobble into a cliff, which is exactly the
+  misreading the contract's quantization exists to prevent. The five-dimension
+  view ships a legend *and* a table view, because three of its five series
+  colours fall below 3:1 contrast on the page's surface.
 - **Data-source status lives on `/docs#chains`, not the landing page.** The
   marketing page shows all four chains equally; the per-host status — and why a
   degraded `/holders` endpoint means a refusal rather than a partial score — is
@@ -500,14 +552,45 @@ python3 tools/minify_contract.py contracts/RiskConsumer.py -o build/RiskConsumer
 bash tools/deploy_bradbury.sh
 ```
 
-The minifier strips comments, docstrings and blank lines and narrows
-indentation — never renaming, reordering or touching a non-docstring string —
-then asserts the public surface is unchanged. Readable source stays in git; the
-artifact is what deploys.
+The minifier strips comments, docstrings and blank lines, narrows indentation,
+and pools repeated string literals into short module-level names. It never
+renames an identifier, never reorders a statement, and never alters the *value*
+of any string — prompt templates included — then asserts the public surface is
+unchanged. Readable source stays in git; the artifact is what deploys.
+
+### The deploy ceiling is real, and here is where it is
+
+The 48 KB figure in circulation is stale — a 50,382-byte artifact deployed fine
+to both networks on 2026-08-31. But there **is** a ceiling, and adding the
+watchlist walked straight into it. At 54,325 bytes Bradbury refused:
+
+```
+GenLayer RPC error (eth_estimateGas): invalid transaction: BlockPubdataLimitReached
+GenLayer RPC error (eth_sendRawTransaction): intrinsic gas too low
+```
+
+Padded probe contracts then bracketed it: **52,000 and 53,000 bytes deployed;
+53,700 was refused.** So the ceiling sits between 53,000 and 53,700 bytes of
+source — and because it is a *block* pubdata limit rather than a per-transaction
+one, the exact figure depends on what else is in the block.
+
+The fix was not to cut the feature. String pooling took the artifact from 54,325
+to **52,070** bytes: `"token_address"` alone appears fifteen times, and binding
+it once to a two-character name saves 174 bytes without changing a single
+string's value. Annotations, f-string fragments and `match` patterns are
+excluded, because those are the three places where a name and a literal do not
+mean the same thing.
+
+Proof it changed nothing: USDT on Ethereum, scored through the pooled artifact
+on the fresh Bradbury deployment, returns content hash `422:41a76eee24bba743` —
+byte-identical to the hash the unpooled artifact produced on the previous
+deployment. `test/test_logic.py` budgets 53,000 bytes and fails the build above
+it.
 
 ## Method surface
 
-**Write** — `request_risk(token, chain)` payable · `claim_refund()` ·
+**Write** — `request_risk(token, chain)` payable · `add_to_watchlist(token,
+chain)` · `remove_from_watchlist(token, chain)` · `claim_refund()` ·
 `clear_stale_pending(token, chain)` · owner-only: `set_fee`, `set_paused`,
 `transfer_ownership`, `withdraw`
 
@@ -515,4 +598,4 @@ artifact is what deploys.
 · `get_badge` · `is_safe` · `require_safe` · `check_rug_pull` · `compare_tokens`
 · `get_safest_tokens` · `get_riskiest_tokens` · `verify_risk` · `get_evidence` ·
 `get_stats` · `get_config` · `get_refund` · `get_tracked_tokens` ·
-`get_governance_log`
+`get_governance_log` · `get_watchlist`

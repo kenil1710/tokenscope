@@ -29,6 +29,8 @@ export function Footer() {
                 <li><Link href="/scan" className="text-ink-600 hover:text-ink-900">Scan a token</Link></li>
                 <li><Link href="/explore" className="text-ink-600 hover:text-ink-900">Explore</Link></li>
                 <li><Link href="/compare" className="text-ink-600 hover:text-ink-900">Compare</Link></li>
+                <li><Link href="/portfolio" className="text-ink-600 hover:text-ink-900">Portfolio</Link></li>
+                <li><Link href="/watchlist" className="text-ink-600 hover:text-ink-900">Watchlist</Link></li>
               </ul>
             </div>
             <div>
@@ -38,7 +40,7 @@ export function Footer() {
               <ul className="mt-3 space-y-2 text-sm">
                 <li><Link href="/docs" className="text-ink-600 hover:text-ink-900">How it works</Link></li>
                 <li><Link href="/docs#dimensions" className="text-ink-600 hover:text-ink-900">The five dimensions</Link></li>
-                <li><Link href="/docs#developers" className="text-ink-600 hover:text-ink-900">For developers</Link></li>
+                <li><Link href="/docs/api" className="text-ink-600 hover:text-ink-900">Developer API</Link></li>
               </ul>
             </div>
             <div>

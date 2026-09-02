@@ -28,6 +28,7 @@ import type {
   Stats,
   TrackedTokens,
   Verification,
+  Watchlist,
 } from "@/types";
 
 export type TransactionHash = `0x${string}`;
@@ -143,6 +144,10 @@ export function getEvidence(scoreId: number): Promise<Evidence> {
   return read<Evidence>("get_evidence", [scoreId]);
 }
 
+export function getWatchlist(owner: string): Promise<Watchlist> {
+  return read<Watchlist>("get_watchlist", [owner]);
+}
+
 export function getStats(): Promise<Stats> {
   return read<Stats>("get_stats");
 }
@@ -198,6 +203,44 @@ export async function requestRisk(
     functionName: "request_risk",
     args: [token, chain] as never,
     value: fee,
+  }) as Promise<TransactionHash>;
+}
+
+/**
+ * Watch a token under the caller's own address.
+ *
+ * Not payable, and deliberately: watching is storage and nothing else — no
+ * fetch, no validator work, no consensus round — so there is nothing to charge
+ * for. It is still a write, so it still needs a signature and still costs gas
+ * on a metered network.
+ *
+ * Adding a token that is already watched is `ALREADY_WATCHED`, a normal answer
+ * rather than a revert. A full watchlist DOES revert; the caller has to remove
+ * something first, and the message says so.
+ */
+export async function addToWatchlist(
+  account: `0x${string}`,
+  token: string,
+  chain: ChainName,
+): Promise<TransactionHash> {
+  return getWalletClient(account).writeContract({
+    address: CONTRACT_ADDRESS,
+    functionName: "add_to_watchlist",
+    args: [token, chain] as never,
+    value: 0n,
+  }) as Promise<TransactionHash>;
+}
+
+export async function removeFromWatchlist(
+  account: `0x${string}`,
+  token: string,
+  chain: ChainName,
+): Promise<TransactionHash> {
+  return getWalletClient(account).writeContract({
+    address: CONTRACT_ADDRESS,
+    functionName: "remove_from_watchlist",
+    args: [token, chain] as never,
+    value: 0n,
   }) as Promise<TransactionHash>;
 }
 
@@ -269,6 +312,39 @@ export async function waitForScan(
   }
 
   onPhase?.("timeout");
+  return null;
+}
+
+/**
+ * Waits for a watchlist write to be visible to a read.
+ *
+ * `add_to_watchlist` returns `{status: "OK" | "ALREADY_WATCHED", ...}`, but a
+ * write returns a transaction hash and the payload is only in the receipt — so
+ * the honest way to know it landed is to read the list back. `present` says
+ * which end state to wait for, which makes the same poller serve add and
+ * remove.
+ */
+export async function waitForWatchlist(
+  owner: string,
+  key: string,
+  present: boolean,
+  options: { signal?: AbortSignal; timeoutMs?: number; intervalMs?: number } = {},
+): Promise<Watchlist | null> {
+  const { signal, timeoutMs = 120_000, intervalMs = 3_000 } = options;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error("aborted");
+    try {
+      const list = await getWatchlist(owner);
+      const has = (list.tokens ?? []).some((row) => row.key === key);
+      if (has === present) return list;
+    } catch {
+      // Mid-poll read failures are the rate limiter or a slow node, not a
+      // failed write. Keep waiting for the deadline.
+    }
+    await sleep(intervalMs, signal);
+  }
   return null;
 }
 

@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import { ScoreCard } from "./ScoreCard";
 import { NoFlagsCard, RugFlagCard } from "./RugFlagCard";
-import { ScoreHistory } from "./ScoreHistory";
+import { RiskChart } from "./RiskChart";
+import { WatchButton } from "./WatchButton";
 import { ChainSelector } from "./ChainSelector";
 import {
   checkRugPull,
@@ -109,9 +110,12 @@ export function TokenDetail({
 
   return (
     <div className="space-y-8">
-      <div className="sm:w-64">
-        <label className="mb-1.5 block text-sm font-medium text-ink-800">Chain</label>
-        <ChainSelector value={chain} onChange={setChain} />
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="w-full sm:w-64">
+          <label className="mb-1.5 block text-sm font-medium text-ink-800">Chain</label>
+          <ChainSelector value={chain} onChange={setChain} />
+        </div>
+        <WatchButton token={address} chain={chain} />
       </div>
 
       <ScoreCard record={record} showLink={false} />
@@ -204,13 +208,24 @@ export function TokenDetail({
       {history && history.scores?.length > 1 ? (
         <section>
           <h2 className="text-lg font-semibold text-ink-900">Score history</h2>
-          <p className="mt-1.5 text-sm text-ink-600">
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-ink-600">
             The last {history.scores.length} of up to {history.capacity} stored scores.
-            Best {history.best_overall}, worst {history.worst_overall}.
+            Best {history.best_overall}, worst {history.worst_overall}. Each point is a
+            separate consensus round over live data, so a flat line means the token
+            really did not move — not that nothing was measured.
           </p>
           <div className="mt-4 rounded-2xl border border-hairline bg-surface p-5 shadow-card">
-            <ScoreHistory scores={history.scores} />
+            <RiskChart scores={history.scores} capacity={history.capacity} />
           </div>
+        </section>
+      ) : history && history.scores?.length === 1 ? (
+        <section>
+          <h2 className="text-lg font-semibold text-ink-900">Score history</h2>
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-ink-600">
+            One scan so far, so there is no line to draw yet. The contract keeps the
+            last {history.capacity} scores per token — scan again later and the chart
+            appears here.
+          </p>
         </section>
       ) : null}
 

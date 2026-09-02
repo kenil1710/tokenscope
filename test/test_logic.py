@@ -29,6 +29,7 @@ import ast
 import builtins
 import json
 import sys
+import re
 import types
 import unittest
 from pathlib import Path
@@ -63,14 +64,185 @@ def _offline(*_a, **_k):
     raise AssertionError("offline tests must not touch the network or a model")
 
 
+# --------------------------------------------------------------------------
+# storage stubs
+#
+# The pure region loads with almost nothing (`gl.vm.UserError` and no more),
+# but the watchlist lives in CLASS methods over real storage containers, and a
+# TreeMap of DynArrays is exactly the kind of thing a static check cannot prove
+# right. So the second loader below execs the WHOLE contract against Python
+# stand-ins for the storage primitives and drives the methods for real.
+#
+# The stubs implement only what the contract actually calls -
+# `get_or_insert_default` and `append_new_get` are the two that matter - and
+# they are deliberately dumb: their job is to let the contract's own logic run,
+# not to model GenVM.
+# --------------------------------------------------------------------------
+
+ZERO_ADDR = "0x" + "0" * 40
+
+
+def _identity(fn):
+    return fn
+
+
+class _WriteDeco:
+    """`@gl.public.write` and `@gl.public.write.payable` are both no-ops here."""
+
+    def __init__(self):
+        self.payable = _identity
+
+    def __call__(self, fn):
+        return fn
+
+
+class _Address:
+    def __init__(self, value=ZERO_ADDR):
+        self.as_hex = str(value)
+
+    def __eq__(self, other):
+        return isinstance(other, _Address) and other.as_hex.lower() == self.as_hex.lower()
+
+    def __hash__(self):
+        return hash(self.as_hex.lower())
+
+
+class _Uint(int):
+    """u32 / u64 / u256 are plain ints once the range check is somebody else's
+    problem; keeping them distinct types lets `_default_for` recognise them."""
+
+
+class u32(_Uint):
+    pass
+
+
+class u64(_Uint):
+    pass
+
+
+class u256(_Uint):
+    pass
+
+
+class _Spec:
+    def __init__(self, args):
+        self.args = args
+
+
+class _DynSpec(_Spec):
+    pass
+
+
+class _MapSpec(_Spec):
+    pass
+
+
+class _DynArray(list):
+    def __init__(self, item_type):
+        super().__init__()
+        self.item_type = item_type
+
+    def append_new_get(self):
+        value = _default_for(self.item_type)
+        self.append(value)
+        return value
+
+
+class _TreeMap(dict):
+    def __init__(self, value_type):
+        super().__init__()
+        self.value_type = value_type
+
+    def get_or_insert_default(self, key):
+        if key not in self:
+            self[key] = _default_for(self.value_type)
+        return self[key]
+
+
+class _DynArrayMeta(type):
+    def __getitem__(cls, item):
+        return _DynSpec(item)
+
+
+class DynArray(metaclass=_DynArrayMeta):
+    pass
+
+
+class _TreeMapMeta(type):
+    def __getitem__(cls, item):
+        return _MapSpec(item)
+
+
+class TreeMap(metaclass=_TreeMapMeta):
+    pass
+
+
+def _default_for(annotation):
+    """A zero value for a storage annotation, the way GenVM hands back a freshly
+    inserted slot rather than a KeyError."""
+    if isinstance(annotation, _DynSpec):
+        return _DynArray(annotation.args)
+    if isinstance(annotation, _MapSpec):
+        return _TreeMap(annotation.args[1])
+    if annotation is str:
+        return ""
+    if annotation is bool:
+        return False
+    if annotation is _Address:
+        return _Address()
+    if isinstance(annotation, type) and issubclass(annotation, _Uint):
+        return annotation(0)
+    if annotation is int:
+        return 0
+    if hasattr(annotation, "__dataclass_fields__"):
+        return annotation(
+            **{name: _default_for(field.type)
+               for name, field in annotation.__dataclass_fields__.items()}
+        )
+    raise AssertionError(f"no default for storage annotation {annotation!r}")
+
+
+class _Contract:
+    """Stands in for `gl.Contract`.
+
+    Storage slots are declared as bare class annotations and are live before
+    `__init__` runs on chain, so they are materialised in `__new__` here - the
+    contract's own `__init__` writes to several of them and never calls super().
+    """
+
+    balance = 0
+
+    def __new__(cls, *_a, **_k):
+        self = object.__new__(cls)
+        annotations = {}
+        for base in reversed(cls.__mro__):
+            annotations.update(getattr(base, "__annotations__", {}))
+        for name, annotation in annotations.items():
+            setattr(self, name, _default_for(annotation))
+        return self
+
+
 def _install_stub() -> None:
     if "genlayer" in sys.modules:
         return
     mod = types.ModuleType("genlayer")
-    vm = types.SimpleNamespace(UserError=_UserError)
+    vm = types.SimpleNamespace(
+        UserError=_UserError, Result=object, Return=object,
+        run_nondet_unsafe=_offline)
     web = types.SimpleNamespace(request=_offline, render=_offline, get=_offline)
     nondet = types.SimpleNamespace(web=web, exec_prompt=_offline)
-    mod.gl = types.SimpleNamespace(vm=vm, nondet=nondet)
+    public = types.SimpleNamespace(view=_identity, write=_WriteDeco())
+    evm = types.SimpleNamespace(contract_interface=_identity)
+    mod.gl = types.SimpleNamespace(
+        vm=vm, nondet=nondet, public=public, evm=evm, Contract=_Contract,
+        message=types.SimpleNamespace(sender_address=_Address(), value=0))
+    mod.Address = _Address
+    mod.u32 = u32
+    mod.u64 = u64
+    mod.u256 = u256
+    mod.TreeMap = TreeMap
+    mod.DynArray = DynArray
+    mod.allow_storage = _identity
     sys.modules["genlayer"] = mod
 
 
@@ -88,6 +260,17 @@ def load(path: Path, name: str) -> types.ModuleType:
     module = types.ModuleType(name)
     module.__file__ = str(path)
     exec(compile(tree, str(path), "exec"), module.__dict__)
+    return module
+
+
+def load_full(path: Path, name: str) -> types.ModuleType:
+    """Exec the WHOLE contract, class bodies included, against the storage stubs
+    above. What `load` gives you is the arithmetic; what this gives you is a
+    contract you can actually call methods on."""
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf8"), str(path), "exec"),
+         module.__dict__)
     return module
 
 
@@ -1427,8 +1610,372 @@ class TestDeployableArtifact(unittest.TestCase):
                      "get_stats", "get_config", "check_rug_pull",
                      "claim_refund", "withdraw", "set_paused",
                      "transfer_ownership", "clear_stale_pending",
-                     "get_evidence"):
+                     "get_evidence", "add_to_watchlist",
+                     "remove_from_watchlist", "get_watchlist"):
             self.assertIn(want, names, want)
+
+
+class _Chain:
+    """A live TokenScope over stubbed storage, with a couple of scored tokens
+    planted directly into the feed the way a settled round would leave them."""
+
+    def __init__(self, module):
+        self.mod = module
+        self.gl = module.gl
+        self.gl.message.sender_address = _Address(WALLET_A)
+        self.c = module.TokenScope()
+
+    def sender(self, address):
+        self.gl.message.sender_address = _Address(address)
+
+    def score(self, token, chain, overall, *, seq=1, symbol="TKN",
+              rug="LOW", badge="VERIFIED_SAFE", flags=""):
+        """Write a record straight into storage. The scoring path itself is
+        covered by the rest of this file; what the watchlist needs is a feed
+        that looks the way a settled round leaves one."""
+        key = self.mod._key(chain, token)
+        feed = self.c.feeds.get_or_insert_default(key)
+        feed.token = token
+        feed.chain = chain
+        feed.symbol = symbol
+        feed.capacity = 12
+        rec = feed.history.append_new_get()
+        rec.score_id = len(self.c.feeds)
+        rec.token = token
+        rec.chain = chain
+        rec.symbol = symbol
+        rec.name = symbol + " Token"
+        rec.overall_score = overall
+        rec.rug_level = rug
+        rec.rug_flags = flags
+        rec.badge = badge
+        rec.confidence = "HIGH"
+        rec.scored_at = 1_700_000_000
+        rec.scorer = _Address(WALLET_A)
+        rec.seq = seq
+        feed.cursor = len(feed.history) % 12
+        feed.update_count = seq
+        return rec
+
+    def rescore(self, token, chain, overall, *, seq=2):
+        """Append a second, different score - the case the watchlist exists to
+        surface."""
+        return self.score(token, chain, overall, seq=seq)
+
+
+WALLET_A = "0x1111111111111111111111111111111111111111"
+WALLET_B = "0x2222222222222222222222222222222222222222"
+PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+
+
+class TestWatchlist(unittest.TestCase):
+    """The watchlist is storage, not consensus - so it is tested by running it,
+    not by reasoning about it. Every case here calls the real contract methods
+    over the stubs above."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_full")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+        self.c = self.chain.c
+
+    def test_add_then_read_back(self):
+        self.chain.score(USDT, "ethereum", 86)
+        out = self.c.add_to_watchlist(USDT, "ethereum")
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(out["capacity"], 20)
+        self.assertTrue(out["scored"])
+        self.assertEqual(out["baseline_overall"], 86)
+
+        listed = self.c.get_watchlist(WALLET_A)
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["owner"], WALLET_A)
+        row = listed["tokens"][0]
+        self.assertEqual(row["token_address"], USDT)
+        self.assertEqual(row["chain"], "ethereum")
+        self.assertTrue(row["scored"])
+        self.assertEqual(row["overall_score"], 86)
+        self.assertEqual(row["symbol"], "TKN")
+        self.assertEqual(row["delta"], 0)
+        self.assertEqual(row["direction"], "SAME")
+
+    def test_an_unscored_token_is_watchable_and_says_so(self):
+        """The commonest reason to watch a token is that nobody has scored it
+        yet, so hiding it would remove the feature's whole point."""
+        out = self.c.add_to_watchlist(PEPE, "ethereum")
+        self.assertEqual(out["status"], "OK")
+        self.assertFalse(out["scored"])
+        self.assertEqual(out["baseline_overall"], 0)
+
+        listed = self.c.get_watchlist(WALLET_A)
+        row = listed["tokens"][0]
+        self.assertFalse(row["scored"])
+        self.assertEqual(row["direction"], "UNSCORED")
+        self.assertEqual(listed["unscored"], 1)
+        self.assertNotIn("overall_score", row)
+
+    def test_direction_tracks_movement_against_the_watchers_baseline(self):
+        self.chain.score(USDT, "ethereum", 70)
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.chain.rescore(USDT, "ethereum", 85)
+
+        listed = self.c.get_watchlist(WALLET_A)
+        row = listed["tokens"][0]
+        self.assertEqual(row["overall_score"], 85)
+        self.assertEqual(row["baseline_overall"], 70)
+        self.assertEqual(row["delta"], 15)
+        self.assertEqual(row["direction"], "UP")
+        self.assertEqual(listed["moved"], 1)
+
+    def test_a_falling_score_reads_as_down(self):
+        self.chain.score(USDT, "ethereum", 90)
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.chain.rescore(USDT, "ethereum", 60)
+        row = self.c.get_watchlist(WALLET_A)["tokens"][0]
+        self.assertEqual(row["delta"], -30)
+        self.assertEqual(row["direction"], "DOWN")
+
+    def test_a_token_scored_after_being_watched_reads_as_new(self):
+        """Baseline seq 0 means the watcher never saw a score, so the first one
+        is not an improvement - there was nothing to improve on."""
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.chain.score(USDT, "ethereum", 86)
+        listed = self.c.get_watchlist(WALLET_A)
+        row = listed["tokens"][0]
+        self.assertTrue(row["scored"])
+        self.assertEqual(row["direction"], "NEW")
+        self.assertEqual(listed["moved"], 0)
+
+    def test_adding_twice_is_idempotent(self):
+        self.chain.score(USDT, "ethereum", 86)
+        self.c.add_to_watchlist(USDT, "ethereum")
+        again = self.c.add_to_watchlist(USDT, "ethereum")
+        self.assertEqual(again["status"], "ALREADY_WATCHED")
+        self.assertEqual(again["count"], 1)
+        self.assertEqual(self.c.get_watchlist(WALLET_A)["count"], 1)
+
+    def test_the_same_address_on_two_chains_is_two_entries(self):
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.c.add_to_watchlist(USDT, "arbitrum")
+        listed = self.c.get_watchlist(WALLET_A)
+        self.assertEqual(listed["count"], 2)
+        self.assertEqual({row["key"] for row in listed["tokens"]},
+                         {"ethereum:" + USDT, "arbitrum:" + USDT})
+
+    def test_remove_compacts_and_preserves_the_rest(self):
+        tokens = ["0x" + f"{i:040x}" for i in range(1, 5)]
+        for token in tokens:
+            self.c.add_to_watchlist(token, "ethereum")
+        out = self.c.remove_from_watchlist(tokens[1], "ethereum")
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["count"], 3)
+
+        listed = self.c.get_watchlist(WALLET_A)
+        self.assertEqual([row["token_address"] for row in listed["tokens"]],
+                         [tokens[0], tokens[2], tokens[3]])
+
+    def test_a_freed_slot_is_reused_rather_than_left_readable(self):
+        """`used` is the live count and the DynArray keeps its length, so the
+        slot a removal freed must be overwritten by the next add - not read back
+        as a phantom entry."""
+        first = "0x" + "a" * 40
+        second = "0x" + "b" * 40
+        self.c.add_to_watchlist(first, "ethereum")
+        self.c.remove_from_watchlist(first, "ethereum")
+        self.assertEqual(self.c.get_watchlist(WALLET_A)["count"], 0)
+        self.c.add_to_watchlist(second, "ethereum")
+        listed = self.c.get_watchlist(WALLET_A)
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["tokens"][0]["token_address"], second)
+
+    def test_removing_something_unwatched_is_refused(self):
+        with self.assertRaises(_UserError):
+            self.c.remove_from_watchlist(USDT, "ethereum")
+        self.c.add_to_watchlist(USDT, "ethereum")
+        with self.assertRaises(_UserError):
+            self.c.remove_from_watchlist(PEPE, "ethereum")
+
+    def test_the_cap_is_twenty_and_it_holds(self):
+        for i in range(1, 21):
+            self.c.add_to_watchlist("0x" + f"{i:040x}", "ethereum")
+        self.assertEqual(self.c.get_watchlist(WALLET_A)["count"], 20)
+        with self.assertRaises(_UserError) as caught:
+            self.c.add_to_watchlist("0x" + f"{21:040x}", "ethereum")
+        self.assertIn("full", caught.exception.message)
+        # and removing one makes room again
+        self.c.remove_from_watchlist("0x" + f"{1:040x}", "ethereum")
+        self.c.add_to_watchlist("0x" + f"{21:040x}", "ethereum")
+        self.assertEqual(self.c.get_watchlist(WALLET_A)["count"], 20)
+
+    def test_watchlists_are_per_owner(self):
+        self.chain.score(USDT, "ethereum", 86)
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.chain.sender(WALLET_B)
+        self.c.add_to_watchlist(PEPE, "ethereum")
+
+        a = self.c.get_watchlist(WALLET_A)
+        b = self.c.get_watchlist(WALLET_B)
+        self.assertEqual([row["token_address"] for row in a["tokens"]], [USDT])
+        self.assertEqual([row["token_address"] for row in b["tokens"]], [PEPE])
+
+    def test_one_owner_cannot_remove_anothers_entry(self):
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.chain.sender(WALLET_B)
+        with self.assertRaises(_UserError):
+            self.c.remove_from_watchlist(USDT, "ethereum")
+        self.chain.sender(WALLET_A)
+        self.assertEqual(self.c.get_watchlist(WALLET_A)["count"], 1)
+
+    def test_an_empty_watchlist_reads_as_empty_not_as_an_error(self):
+        listed = self.c.get_watchlist(WALLET_B)
+        self.assertEqual(listed["count"], 0)
+        self.assertEqual(listed["tokens"], [])
+        self.assertEqual(listed["capacity"], 20)
+
+    def test_addresses_normalise_the_same_way_everywhere(self):
+        """Casing and a pasted explorer URL must reach the same storage key, or
+        one wallet ends up with two watchlists."""
+        self.c.add_to_watchlist(USDT.upper(), "ETHEREUM")
+        listed = self.c.get_watchlist(WALLET_A.upper())
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["tokens"][0]["token_address"], USDT)
+        again = self.c.add_to_watchlist(
+            "https://eth.blockscout.com/address/" + USDT, "ethereum")
+        self.assertEqual(again["status"], "ALREADY_WATCHED")
+
+    def test_an_unsupported_chain_is_refused(self):
+        with self.assertRaises(_UserError):
+            self.c.add_to_watchlist(USDT, "solana")
+
+    def test_watching_is_free_and_touches_no_fee_state(self):
+        """No fee, no refund credit, no request counter - the point of the
+        method is that it costs nothing but storage."""
+        before = (int(self.c.total_fees_wei), int(self.c.total_requests),
+                  int(self.c.refunds_owed))
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.c.remove_from_watchlist(USDT, "ethereum")
+        self.assertEqual(
+            (int(self.c.total_fees_wei), int(self.c.total_requests),
+             int(self.c.refunds_owed)), before)
+
+    def test_the_cap_is_reported_by_get_config(self):
+        self.assertEqual(self.c.get_config()["max_watchlist"], 20)
+
+    def test_the_artifact_behaves_identically(self):
+        """Same battery, through the file that actually gets deployed."""
+        artifact = load_full(ARTIFACT, "tokenscope_full_min")
+        chain = _Chain(artifact)
+        chain.score(USDT, "ethereum", 70)
+        chain.c.add_to_watchlist(USDT, "ethereum")
+        chain.rescore(USDT, "ethereum", 85)
+        self.assertEqual(chain.c.get_watchlist(WALLET_A)["tokens"][0],
+                         self._reference())
+
+    def _reference(self):
+        self.chain.score(USDT, "ethereum", 70)
+        self.c.add_to_watchlist(USDT, "ethereum")
+        self.chain.rescore(USDT, "ethereum", 85)
+        return self.c.get_watchlist(WALLET_A)["tokens"][0]
+
+
+class TestStringPooling(unittest.TestCase):
+    """The minifier now binds repeated string literals to short module-level
+    names. That is a rewrite of the deployable file, so it gets its own tests
+    rather than riding on the behavioural suite alone — a pooling bug that
+    happened not to change a score would otherwise ship unnoticed."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not ARTIFACT.exists():
+            raise unittest.SkipTest("build the artifact first")
+        cls.tree = ast.parse(ARTIFACT.read_text(encoding="utf8"))
+
+    def _pool(self):
+        """Every `_xx = "..."` binding the pooling pass emitted."""
+        out = {}
+        for node in self.tree.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and re.fullmatch(r"_[0-9A-Za-z]{1,2}", node.targets[0].id)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                out[node.targets[0].id] = node.value.value
+        return out
+
+    def test_the_pool_is_not_empty(self):
+        """If pooling silently stopped running, the artifact would grow past
+        the deploy ceiling and nothing else here would notice."""
+        self.assertGreater(len(self._pool()), 20)
+
+    def test_pool_names_are_bound_before_first_use(self):
+        """Class bodies execute at import time, so a field default referencing
+        a pool name must find it already bound."""
+        pool = self._pool()
+        first_def = min(
+            (n.lineno for n in self.tree.body
+             if isinstance(n, (ast.ClassDef, ast.FunctionDef))),
+            default=10**9,
+        )
+        for node in self.tree.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in pool):
+                self.assertLess(node.lineno, first_def, node.targets[0].id)
+
+    def test_no_pool_name_is_shadowed_anywhere(self):
+        """A function-local called `_0` would shadow the module binding and
+        raise UnboundLocalError at the worst possible moment."""
+        pool = set(self._pool())
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                if node.id in pool:
+                    # The pool's own bindings are the only legal stores.
+                    self.assertIn(node.lineno,
+                                  {n.lineno for n in self.tree.body
+                                   if isinstance(n, ast.Assign)}, node.id)
+            elif isinstance(node, ast.arg):
+                self.assertNotIn(node.arg, pool)
+
+    def test_annotations_were_never_pooled(self):
+        """GenVM reads annotation source to build the ABI and the storage
+        layout, so a pooled name there would change the deployed interface."""
+        pool = set(self._pool())
+        annotations = []
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.AnnAssign):
+                annotations.append(node.annotation)
+            elif isinstance(node, ast.FunctionDef):
+                if node.returns is not None:
+                    annotations.append(node.returns)
+                for a in (list(node.args.posonlyargs) + list(node.args.args)
+                          + list(node.args.kwonlyargs)):
+                    if a.annotation is not None:
+                        annotations.append(a.annotation)
+        for annotation in annotations:
+            for sub in ast.walk(annotation):
+                if isinstance(sub, ast.Name):
+                    self.assertNotIn(sub.id, pool, ast.dump(annotation))
+
+    def test_pooled_values_match_the_source(self):
+        """Every pooled value must be a string the readable source actually
+        contains. A pass that mangled one would fail here even if no test
+        happened to exercise that code path."""
+        source_strings = {
+            n.value for n in ast.walk(ast.parse(SOURCE.read_text(encoding="utf8")))
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        }
+        for name, value in self._pool().items():
+            self.assertIn(value, source_strings, name)
+
+    def test_the_artifact_is_inside_the_deploy_ceiling(self):
+        """Measured on Bradbury, 2026-09-02: 53,000 bytes deployed, 53,700 was
+        refused with BlockPubdataLimitReached. The budget below sits under the
+        smaller of the two with room to spare, because the limit is a BLOCK
+        limit and what else is in the block is not ours to control."""
+        self.assertLessEqual(len(ARTIFACT.read_bytes()), 53_000)
 
 
 class TestConsumerArtifact(unittest.TestCase):

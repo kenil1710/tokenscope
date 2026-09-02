@@ -3,13 +3,33 @@ from genlayer import *
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import typing
+_0 = 'token_address'
+_1 = '0x0000000000000000000000000000000000000000'
+_2 = 'rug_level'
+_3 = 'overall_score'
+_4 = ' refusing the zero address'
+_5 = 'chain'
+_6 = 'CRITICAL'
+_7 = 'trade_cap'
+_8 = 'oracle unreadable'
+_9 = ' not listed: '
+_a = 'badge'
+_b = 'symbol'
+_c = 'listable'
+_d = 'explorer_url'
+_e = 'age_seconds'
+_f = 'confidence'
+_g = 'found'
+_h = 'rug_flags'
+_i = 'reason'
+_j = 'tier'
 DEFAULT_MIN_SCORE = 50
 DEFAULT_MAX_AGE = 2592000
 DEFAULT_MAX_RUG = "MEDIUM"
 DEFAULT_SLOTS = 500
 MAX_LOG = 200
 ERR = "[EXPECTED]"
-RUG_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+RUG_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, _6: 4}
 BAND_FLOORS = (50, 70, 85)
 BAND_NAMES = ("rejected", "watchlist", "standard", "blue_chip")
 BAND_TRADE_CAP = (0, 1000, 100000, 10000000)
@@ -87,14 +107,14 @@ class RiskConsumer(gl.Contract):
   self.log.append(str(self._now()) + " " + action + " " + _short(detail))
  def _row(self, item: Listing) -> dict:
   return {
-  "token_address": str(item.token),
-  "chain": str(item.chain),
-  "symbol": str(item.symbol),
+  _0: str(item.token),
+  _5: str(item.chain),
+  _b: str(item.symbol),
   "overall": int(item.overall),
-  "rug_level": str(item.rug_level),
-  "badge": str(item.badge),
-  "tier": BAND_NAMES[int(item.band)],
-  "trade_cap": int(item.trade_cap),
+  _2: str(item.rug_level),
+  _a: str(item.badge),
+  _j: BAND_NAMES[int(item.band)],
+  _7: int(item.trade_cap),
   "score_id": int(item.score_id),
   "listed_at": int(item.listed_at),
   "lister": item.lister.as_hex,
@@ -104,17 +124,17 @@ class RiskConsumer(gl.Contract):
   try:
    rec = self._oracle().view().get_risk(token_address, chain)
   except Exception:
-   return {"listable": False,
-   "reason": "oracle unreadable or malformed address",
-   "token_address": str(token_address), "chain": str(chain)}
-  if not rec.get("found"):
-   return {"listable": False, "reason": "never scored",
+   return {_c: False,
+   _i: "oracle unreadable or malformed address",
+   _0: str(token_address), _5: str(chain)}
+  if not rec.get(_g):
+   return {_c: False, _i: "never scored",
    "hint": "call request_risk on the oracle first",
-   "token_address": str(token_address), "chain": str(chain),
-   "badge": "UNSCORED"}
-  overall = int(rec.get("overall_score", 0))
-  rug = str(rec.get("rug_level", "CRITICAL"))
-  age = int(rec.get("age_seconds", 0))
+   _0: str(token_address), _5: str(chain),
+   _a: "UNSCORED"}
+  overall = int(rec.get(_3, 0))
+  rug = str(rec.get(_2, _6))
+  age = int(rec.get(_e, 0))
   band = _band(overall, rug)
   reasons = []
   if overall < int(self.min_score):
@@ -127,36 +147,36 @@ class RiskConsumer(gl.Contract):
   if cap > 0 and age > cap:
    reasons.append("score is " + str(age) + "s old, limit "
    + str(cap) + "s")
-  if self._key(str(rec.get("token_address", "")),
-  str(rec.get("chain", ""))) in self.listed:
+  if self._key(str(rec.get(_0, "")),
+  str(rec.get(_5, ""))) in self.listed:
    reasons.append("already listed")
   if int(self.listing_count) >= int(self.slots):
    reasons.append("no slots left")
   return {
-  "listable": len(reasons) == 0,
+  _c: len(reasons) == 0,
   "reasons": reasons,
-  "token_address": str(rec.get("token_address", token_address)),
-  "chain": str(rec.get("chain", chain)),
-  "symbol": str(rec.get("symbol", "")),
+  _0: str(rec.get(_0, token_address)),
+  _5: str(rec.get(_5, chain)),
+  _b: str(rec.get(_b, "")),
   "overall": overall,
-  "rug_level": rug,
-  "rug_flags": rec.get("rug_flags", []),
-  "badge": str(rec.get("badge", "")),
-  "confidence": str(rec.get("confidence", "LOW")),
-  "age_seconds": age,
-  "tier": BAND_NAMES[band],
-  "trade_cap": BAND_TRADE_CAP[band],
-  "explorer_url": str(rec.get("explorer_url", "")),
+  _2: rug,
+  _h: rec.get(_h, []),
+  _a: str(rec.get(_a, "")),
+  _f: str(rec.get(_f, "LOW")),
+  _e: age,
+  _j: BAND_NAMES[band],
+  _7: BAND_TRADE_CAP[band],
+  _d: str(rec.get(_d, "")),
   }
  @gl.public.view
  def check_rug_pull(self, token_address: str, chain: str) -> typing.Any:
   try:
    out = self._oracle().view().check_rug_pull(token_address, chain)
   except Exception:
-   return {"found": False, "reason": "oracle unreadable",
-   "token_address": str(token_address), "chain": str(chain)}
-  if isinstance(out, dict) and out.get("found"):
-   rug = str(out.get("rug_level", "CRITICAL"))
+   return {_g: False, _i: _8,
+   _0: str(token_address), _5: str(chain)}
+  if isinstance(out, dict) and out.get(_g):
+   rug = str(out.get(_2, _6))
    out["blocked_here"] = (
    RUG_RANK.get(rug, 4)
    > RUG_RANK.get(str(self.max_rug_level), 2))
@@ -176,8 +196,8 @@ class RiskConsumer(gl.Contract):
    item = self.listings[i]
    if self._key(str(item.token), str(item.chain)) == want:
     return self._row(item)
-  return {"found": False, "token_address": str(token_address),
-  "chain": str(chain)}
+  return {_g: False, _0: str(token_address),
+  _5: str(chain)}
  @gl.public.view
  def get_listings(self, count: int) -> typing.Any:
   n = int(count)
@@ -199,8 +219,8 @@ class RiskConsumer(gl.Contract):
   "max_rug_level": str(self.max_rug_level),
   "slots": int(self.slots),
   "listed": int(self.listing_count),
-  "tiers": [{"tier": BAND_NAMES[i + 1], "floor": BAND_FLOORS[i],
-  "trade_cap": BAND_TRADE_CAP[i + 1]}
+  "tiers": [{_j: BAND_NAMES[i + 1], "floor": BAND_FLOORS[i],
+  _7: BAND_TRADE_CAP[i + 1]}
   for i in range(len(BAND_FLOORS))],
   "note": "a HIGH or CRITICAL rug level caps the tier at rejected "
                     "regardless of the overall score",
@@ -210,7 +230,7 @@ class RiskConsumer(gl.Contract):
   try:
    return self._oracle().view().get_stats()
   except Exception:
-   return {"error": "oracle unreadable", "oracle": self.oracle.as_hex}
+   return {"error": _8, "oracle": self.oracle.as_hex}
  @gl.public.view
  def get_log(self, count: int) -> typing.Any:
   total = len(self.log)
@@ -226,24 +246,24 @@ class RiskConsumer(gl.Contract):
   rec = self._oracle().view().require_safe(
   token_address, chain, int(self.min_score),
   int(self.max_age_seconds), str(self.max_rug_level))
-  token = str(rec.get("token_address", ""))
-  ch = str(rec.get("chain", ""))
+  token = str(rec.get(_0, ""))
+  ch = str(rec.get(_5, ""))
   key = self._key(token, ch)
   if key in self.listed:
    raise gl.vm.UserError(ERR + " already listed: " + key)
-  overall = int(rec.get("overall_score", 0))
-  rug = str(rec.get("rug_level", "CRITICAL"))
+  overall = int(rec.get(_3, 0))
+  rug = str(rec.get(_2, _6))
   band = _band(overall, rug)
   if band <= 0:
    raise gl.vm.UserError(ERR + " tier is rejected for " + key)
   item = self.listings.append_new_get()
   item.token = token
   item.chain = ch
-  item.symbol = str(rec.get("symbol", ""))
+  item.symbol = str(rec.get(_b, ""))
   item.lister = gl.message.sender_address
   item.overall = u32(overall)
   item.rug_level = rug
-  item.badge = str(rec.get("badge", ""))
+  item.badge = str(rec.get(_a, ""))
   item.band = u32(band)
   item.trade_cap = u64(BAND_TRADE_CAP[band])
   item.score_id = u32(int(rec.get("score_id", 0)))
@@ -257,12 +277,12 @@ class RiskConsumer(gl.Contract):
  amount: int) -> typing.Any:
   want = self._key(token_address, chain)
   if want not in self.listed:
-   raise gl.vm.UserError(ERR + " not listed: " + want)
+   raise gl.vm.UserError(ERR + _9 + want)
   rec = self._oracle().view().require_safe(
   token_address, chain, int(self.min_score),
   int(self.max_age_seconds), str(self.max_rug_level))
-  band = _band(int(rec.get("overall_score", 0)),
-  str(rec.get("rug_level", "CRITICAL")))
+  band = _band(int(rec.get(_3, 0)),
+  str(rec.get(_2, _6)))
   cap = BAND_TRADE_CAP[band]
   size = int(amount)
   if size <= 0:
@@ -271,16 +291,16 @@ class RiskConsumer(gl.Contract):
    raise gl.vm.UserError(ERR + " trade of " + str(size)
    + " exceeds the " + BAND_NAMES[band]
    + " cap of " + str(cap))
-  return {"allowed": True, "token_address": want, "amount": size,
-  "tier": BAND_NAMES[band], "trade_cap": cap,
-  "current_overall": int(rec.get("overall_score", 0)),
-  "current_rug_level": str(rec.get("rug_level", ""))}
+  return {"allowed": True, _0: want, "amount": size,
+  _j: BAND_NAMES[band], _7: cap,
+  "current_overall": int(rec.get(_3, 0)),
+  "current_rug_level": str(rec.get(_2, ""))}
  @gl.public.write
  def delist(self, token_address: str, chain: str) -> None:
   self._only_owner()
   want = self._key(token_address, chain)
   if want not in self.listed:
-   raise gl.vm.UserError(ERR + " not listed: " + want)
+   raise gl.vm.UserError(ERR + _9 + want)
   keep = []
   for i in range(len(self.listings)):
    item = self.listings[i]
@@ -330,15 +350,15 @@ class RiskConsumer(gl.Contract):
  def set_oracle(self, new_oracle: str) -> None:
   self._only_owner()
   nxt = Address(str(new_oracle))
-  if nxt == Address("0x0000000000000000000000000000000000000000"):
-   raise gl.vm.UserError(ERR + " refusing the zero address")
+  if nxt == Address(_1):
+   raise gl.vm.UserError(ERR + _4)
   self.oracle = nxt
   self._note("set_oracle", nxt.as_hex)
  @gl.public.write
  def transfer_ownership(self, new_owner: str) -> None:
   self._only_owner()
   nxt = Address(str(new_owner))
-  if nxt == Address("0x0000000000000000000000000000000000000000"):
-   raise gl.vm.UserError(ERR + " refusing the zero address")
+  if nxt == Address(_1):
+   raise gl.vm.UserError(ERR + _4)
   self.owner = nxt
   self._note("transfer_ownership", nxt.as_hex)

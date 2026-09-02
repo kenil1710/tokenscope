@@ -13,12 +13,13 @@ export const metadata: Metadata = {
     "What each risk dimension measures, how rug detection reads the verified ABI, and how to consume TokenScope from your own contract.",
 };
 
-const SECTIONS = [
+const SECTIONS: { id: string; label: string; href?: string }[] = [
   { id: "consensus", label: "Why a feature vector" },
   { id: "dimensions", label: "The five dimensions" },
   { id: "rug", label: "Rug detection" },
   { id: "chains", label: "Multi-chain" },
   { id: "developers", label: "For developers" },
+  { id: "api", label: "API reference", href: "/docs/api" },
   { id: "faq", label: "FAQ" },
 ];
 
@@ -47,12 +48,23 @@ export default function DocsPage() {
               <ul className="mt-3 space-y-1.5">
                 {SECTIONS.map((section) => (
                   <li key={section.id}>
-                    <a
-                      href={`#${section.id}`}
-                      className="block text-sm text-ink-500 transition hover:text-ink-900"
-                    >
-                      {section.label}
-                    </a>
+                    {/* A section with its own href is a page, not an anchor —
+                        the API reference outgrew a section on this one. */}
+                    {section.href ? (
+                      <Link
+                        href={section.href}
+                        className="block text-sm font-medium text-ink-600 transition hover:text-ink-900"
+                      >
+                        {section.label} →
+                      </Link>
+                    ) : (
+                      <a
+                        href={`#${section.id}`}
+                        className="block text-sm text-ink-500 transition hover:text-ink-900"
+                      >
+                        {section.label}
+                      </a>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -373,14 +385,22 @@ check_rug_pull(token, chain)`}
                     </div>
                   ) : null}
                 </dl>
-                <a
-                  href="https://github.com/kenil1710/tokenscope/blob/main/contracts/RiskConsumer.py"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-block text-sm font-semibold text-ink-600 hover:text-ink-900"
-                >
-                  Read RiskConsumer.py →
-                </a>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Link
+                    href="/docs/api"
+                    className="rounded-lg bg-ink-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-ink-700"
+                  >
+                    Full API reference
+                  </Link>
+                  <a
+                    href="https://github.com/kenil1710/tokenscope/blob/main/contracts/RiskConsumer.py"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-lg border border-hairline bg-surface px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-ink-300"
+                  >
+                    Read RiskConsumer.py
+                  </a>
+                </div>
               </div>
             </section>
 

@@ -261,3 +261,88 @@ export type ScanResult =
   | { status: "REJECTED"; reason: string; refund_wei: number | string; hint: string };
 
 export type TrackedTokens = { count: number; keys: string[] };
+
+// ── Watchlist ────────────────────────────────────────────────────────────────
+
+/** Which way a watched token has moved since it was added. */
+export type WatchDirection = "UP" | "DOWN" | "SAME" | "NEW" | "UNSCORED";
+
+/**
+ * One row of `get_watchlist`.
+ *
+ * The scored fields are optional because an unscored token is a legitimate
+ * thing to watch — arguably the commonest reason to watch one — and the
+ * contract keeps it in the list rather than dropping it.
+ */
+export type WatchRow = {
+  key: string;
+  chain: ChainName;
+  token_address: string;
+  added_at: number;
+  baseline_overall: number;
+  baseline_seq: number;
+  explorer_url: string;
+  scored: boolean;
+  direction: WatchDirection;
+  delta?: number;
+  score_id?: number;
+  symbol?: string;
+  name?: string;
+  overall_score?: number;
+  rug_level?: RugLevel;
+  rug_flags?: string[];
+  badge?: Badge;
+  confidence?: Confidence;
+  scored_at?: number;
+  age_seconds?: number;
+  seq?: number;
+};
+
+export type Watchlist = {
+  owner: string;
+  count: number;
+  capacity: number;
+  /** How many watched tokens have moved off their baseline. */
+  moved: number;
+  unscored: number;
+  tokens: WatchRow[];
+};
+
+/** What `add_to_watchlist` returns. Adding twice is `ALREADY_WATCHED`, not an error. */
+export type WatchAdd = {
+  status: "OK" | "ALREADY_WATCHED";
+  key: string;
+  count: number;
+  capacity: number;
+  scored?: boolean;
+  baseline_overall?: number;
+};
+
+export type WatchRemove = {
+  status: "OK";
+  key: string;
+  count: number;
+  capacity: number;
+};
+
+// ── Portfolio ────────────────────────────────────────────────────────────────
+
+/**
+ * One ERC-20 balance as `/api/portfolio` returns it — a Blockscout holding
+ * joined to whatever TokenScope knows about the token.
+ *
+ * `usd` is `null` rather than `0` when Blockscout has no exchange rate: a token
+ * with no price is not a token worth nothing, and summing the two together
+ * would be a lie about coverage.
+ */
+export type Holding = {
+  chain: ChainName;
+  token_address: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  /** Raw units, as the string Blockscout returns. Never parsed to a float. */
+  raw: string;
+  amount: number;
+  usd: number | null;
+};
