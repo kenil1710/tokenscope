@@ -180,6 +180,33 @@ The flag also **costs points** — 10 of verification's total, available only
 when the probe resolved. Verification's availability is now 62, 72, 100 or 110
 instead of 62 or 100, rescaled the same way a missing ABI already was.
 
+**All three response classes, live, five tokens, two chains:**
+
+| token | chain | `owner()` answers | flags | `verification` | overall |
+|---|---|---|---|---|---|
+| USDT | ethereum | `0xc6cd…a828` — a live key | MINTABLE, PAUSABLE, HAS_BLACKLIST, **HIDDEN_OWNER** | 70 *(was 75)* | 85 *(86)* |
+| USDT0 | arbitrum | `0x4dff…0bf8` — a live key | UPGRADEABLE_PROXY, **HIDDEN_OWNER** | 60 *(65)* | 87 *(89)* |
+| PEPE | ethereum | `0x000…000` — renounced | HAS_BLACKLIST | **80** *(75)* | 88 *(87)* |
+| LINK | ethereum | reverts — no `owner()` | none | 75 | 90 |
+| SHIB | ethereum | reverts — no `owner()` | none | 75 | 83 |
+
+Every one of those five has `owner` in its `sources_ok`, including the two
+that reverted — because a clean `execution reverted` is an **answer**, not a
+failure. They land on five different verification scores because of *what*
+the answer was.
+
+PEPE is the row the milestone exists for: `check_rug_pull` now returns
+`ownership_renounced: true` with `owner_probe: true`, where 1.0.0 inferred
+the opposite from the mere presence of an `owner` function. USDT0 is the row
+that shows it is not an Ethereum-only arrangement — a second chain, a second
+publicnode host, the same answer.
+
+And notice what did **not** happen. The three with a 1.0.0 record — USDT,
+USDT0 and PEPE — all kept the rug level they had; only the score and the flag
+list moved. The other two carry no flags at all. The new flag is new
+information, not new alarm, and that restraint is what the `weak` qualifier in
+the ladder is for.
+
 ### 2 · Rescan and risk history
 
 `rescan_token(token_id)` — same round, same fee, same cooldown as
@@ -204,6 +231,26 @@ Reads: `get_risk_history(token_id)` for every stored round with its own frozen
 delta, `get_history_by_address(token, chain, count)` for callers holding only
 an address. New page: **`/history/[token]`**.
 
+Live, `rescan_token(1)` on USDT 28 minutes after its first scan:
+
+```json
+{ "score_id": 6, "seq": 2, "overall_score": 85,
+  "previous_overall": 85, "risk_delta": 0, "has_previous": true,
+  "content_hash": "465:96149d87575442e3" }
+```
+
+Two things in that one record. **`risk_delta: 0` with `has_previous: true` is
+"unchanged"** — the first scan read `risk_delta: 0` with `has_previous:
+false`, which is "nothing to compare against". Same number, different claim,
+and a UI reading only the number would have told you USDT was unchanged on a
+token it had never seen before.
+
+And the re-scan reproduced **the same content hash**, 28 minutes and a second
+consensus round later, on a token whose holder count and transfer window both
+moved underneath it. That is the quantization absorbing real drift — a design
+comparing raw percentages would have reported a change where nothing material
+happened.
+
 ### 3 · Portfolio scanner
 
 `batch_scan(addresses, chain)` — up to five tokens on one chain, riskiest
@@ -226,6 +273,23 @@ So: `request_risk` and `rescan_token` buy consensus, one token per transaction;
 `batch_scan` reads what consensus already agreed and does the arithmetic across
 it, free and composable. `unscored` names the addresses still needing a round,
 which is what makes the portfolio page a loop rather than a guess.
+
+Live, on the shipped oracle — four addresses, one of them never scanned:
+
+```json
+{ "requested": 4, "scored": 3, "coverage_pct": 75,
+  "portfolio_score": 87, "mean_score": 87,
+  "flagged_tokens": 2, "total_rug_flags": 5, "high_risk_tokens": 0,
+  "tokens": [ {"rank": 1, "scored": false, "badge": "UNSCORED", "weight": 0},
+              {"rank": 2, "symbol": "USDT", "overall_score": 85, "flag_count": 4},
+              {"rank": 3, "symbol": "PEPE", "overall_score": 88, "flag_count": 1},
+              {"rank": 4, "symbol": "LINK", "overall_score": 90, "flag_count": 0} ] }
+```
+
+The unscored row sorts **first**, not last. An address nobody has checked is
+the one to look at first, and it carries weight 0 so it moves no aggregate —
+where a zero score would have placed it beside the worst real result and said
+something the oracle does not know.
 
 **Weighted by market-cap bucket**, because a pasted list of addresses carries
 no balances. Equal weighting would let a dust-sized token drag a portfolio's
@@ -659,7 +723,7 @@ source list **from stored evidence alone**, and reports which fields — if any 
 disagree with storage. Nothing in that path trusts anything written beside the
 evidence.
 
-Live, on the PEPE record above:
+Live, on the 1.0.0 PEPE record:
 
 ```json
 { "valid": true, "failed": [], "content_hash": "422:28e4f85588019150",
@@ -669,7 +733,29 @@ Live, on the PEPE record above:
                   "badge": "MODERATE_RISK", "confidence": "HIGH" } }
 ```
 
-All thirteen checks pass: the record reproduces itself from its own 32 integers.
+All thirteen checks pass: the record reproduces itself from its own integers —
+29 of them for a 1.0.0 record, 32 for a 1.1.0 one, and `verify_risk` reads the
+count off the evidence rather than assuming it.
+
+### PEPE is where 1.1.0 shows up in the arithmetic
+
+The same token on the 1.1.0 oracle scores **88**, and `verification` moves
+**75 → 80**. Nothing about PEPE changed; what changed is that the contract can
+now *read* that its ownership really was renounced — `owner()` answers
+`0x000…000` — instead of inferring from the ABI that an `owner` function
+existing meant an owner existed. `sources_ok` gains `owner`, and no
+`HIDDEN_OWNER` flag is raised:
+
+```json
+{ "symbol": "PEPE", "overall_score": 88, "verification_score": 80,
+  "rug_flags": ["HAS_BLACKLIST"], "rug_level": "MEDIUM",
+  "content_hash": "465:dc9cf40900e26bdf",
+  "sources_ok": "address,contract,creation,holders,owner,transfers" }
+```
+
+Set against USDT on the same oracle — `HIDDEN_OWNER`, `verification 70` — that
+is the whole feature in two rows: the same check, opposite answers, both
+proved rather than guessed.
 
 Governance cannot move a score. Weights, ladders and point tables are module
 constants, not storage. The owner sets the fee (0…0.1 GEN), pauses new scoring
@@ -692,7 +778,7 @@ once value is attached.
 
 ```bash
 python3 test/test_logic.py
-# 291 tests, 624 assert statements, 6,936 assertions executed
+# 302 tests, 648 assert statements, 7,035 assertions executed
 # stdlib only - no chain, no network, no model, no genlayer install
 ```
 
@@ -701,7 +787,7 @@ ordinal lattice: every feature key, over its entire declared range, asserting
 that no combination can produce an out-of-range dimension, a non-multiple of 5,
 or an unknown rug level.
 
-**151 of those tests are new in 1.1.0** — the four new flags and the owner
+**162 of those tests are new in 1.1.0** — the four new flags and the owner
 probe's five response classes, `token_id` and the frozen delta, `rescan_token`,
 both history reads, `batch_scan`'s parsing, aggregates and ordering, and the
 minifier's renaming pass.
@@ -829,6 +915,16 @@ attempt and the existing suite caught both before anything was deployed:
 binds its own identifier in the enclosing scope. `59,532 → 51,390 bytes`, and
 `build/TokenScope.min.names.json` travels with the artifact so the tests can
 still reach `_score` under whatever it is now called.
+
+**The build is reproducible**, which is what makes "verify with `shasum`"
+mean anything. Every name is allocated from a sorted list, so nothing depends
+on dict iteration order:
+
+```bash
+PYTHONHASHSEED=1   python3 tools/minify_contract.py contracts/TokenScope.py -o /tmp/a.py
+PYTHONHASHSEED=999 python3 tools/minify_contract.py contracts/TokenScope.py -o /tmp/b.py
+shasum -a 256 /tmp/a.py /tmp/b.py build/TokenScope.min.py   # three identical hashes
+```
 
 ### The deploy ceiling is real, and here is where it is
 

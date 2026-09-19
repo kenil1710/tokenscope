@@ -13,7 +13,7 @@
     "vector_change": "29 ordinals -> 32: hidden_owner, hold_lo, src_owner. _digest prefixes the hash with the canonical length, so a 1.1.0 hash (prefix 465) can never collide with a 1.0.0 one (prefix 422).",
     "signature_change": "get_risk_history now takes token_id. The address-addressed form is get_history_by_address(token_address, chain, count). RiskConsumer is unaffected - it only calls get_risk, is_safe, require_safe, check_rug_pull, get_badge and get_stats.",
     "renames": "UNVERIFIED -> UNVERIFIED_SOURCE and CONCENTRATED -> CONCENTRATED_SUPPLY, rather than adding duplicate flags that would double-count in batch_scan.total_rug_flags. CONCENTRATED_SUPPLY also moved from the 75% rung to the 50% one the name claims; the rug ladder still keys its severe rungs off 75%.",
-    "tests": "140 -> 292 tests, 6,936 assertions executed."
+    "tests": "140 -> 302 tests, 7,035 assertions executed."
   },
   "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
   "chains_scored": [
@@ -187,5 +187,152 @@
     "sequence": "USDT was scored, then watched (baseline 86). PEPE was watched BEFORE it was ever scored, then scored.",
     "read_back": "USDT: direction SAME, delta 0, baseline_overall 86, overall_score 86. PEPE: direction NEW, delta 87, baseline_overall 0, overall_score 87. count 2, capacity 20, moved 0, unscored 0.",
     "why_moved_is_zero": "A first score is not movement. baseline_seq 0 means the watcher never saw a score to move away from, so the entry reports NEW and is left out of the moved count - which is what makes `moved` mean 'something you were watching changed'."
+  },
+  "live_scores_1_1_0": {
+    "network": "studionet 0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88",
+    "what_these_show": "Five tokens across two chains, and all three owner-probe response classes. USDT and USDT0 answer a live address; PEPE answers the zero address; LINK and SHIB revert because they have no owner() at all. Every one of them ends up with `owner` in sources_ok, because a revert is an ANSWER - and they land on five different verification scores because of what that answer was.",
+    "USDT ethereum": {
+      "token_id": 1,
+      "overall": 85,
+      "content_hash": "465:96149d87575442e3",
+      "distribution": 70,
+      "activity": 100,
+      "verification": 70,
+      "maturity": 100,
+      "liquidity": 95,
+      "rug_level": "MEDIUM",
+      "badge": "MODERATE_RISK",
+      "confidence": "HIGH",
+      "rug_flags": [
+        "MINTABLE",
+        "PAUSABLE",
+        "HAS_BLACKLIST",
+        "HIDDEN_OWNER"
+      ],
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "vs_1_0_0": "was overall 86, verification 75, 3 flags, hash 422:41a76eee24bba743. owner() answers 0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828, so HIDDEN_OWNER fires and the live key costs 10 of verification's points. The rug level did NOT move: USDT is verified, eight years old, widely held and not concentrated, so the ladder reads the key as centralisation rather than a rug."
+    },
+    "PEPE ethereum": {
+      "token_id": 2,
+      "overall": 88,
+      "content_hash": "465:dc9cf40900e26bdf",
+      "distribution": 80,
+      "activity": 95,
+      "verification": 80,
+      "maturity": 100,
+      "liquidity": 90,
+      "rug_level": "MEDIUM",
+      "badge": "MODERATE_RISK",
+      "confidence": "HIGH",
+      "rug_flags": [
+        "HAS_BLACKLIST"
+      ],
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "vs_1_0_0": "was overall 87, verification 75. THIS IS THE CASE THE MILESTONE EXISTS FOR. PEPE has an `owner` function AND has renounced; 1.0.0's ABI inference called it owned. owner() answers 0x000...000, so check_rug_pull now reports ownership_renounced true with owner_probe true, and verification gains the 10 points 1.0.0 could not award it."
+    },
+    "LINK ethereum": {
+      "token_id": 3,
+      "overall": 90,
+      "content_hash": "465:3f90b2e299927c0e",
+      "verification": 75,
+      "rug_level": "NONE",
+      "badge": "VERIFIED_SAFE",
+      "rug_flags": [],
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "note": "owner() reverts - LINK has no owner function at all. A clean `execution reverted` is an ANSWER, not a failure, so src_owner is set and `owner` appears in sources_ok even though nothing was read."
+    },
+    "SHIB ethereum": {
+      "token_id": 4,
+      "overall": 83,
+      "content_hash": "465:e96d339961dcdd26",
+      "verification": 75,
+      "rug_level": "NONE",
+      "badge": "VERIFIED_SAFE",
+      "rug_flags": [],
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "note": "owner() reverts, like LINK. No owner function, so nothing to renounce and nothing to fear from one."
+    },
+    "USDT0 arbitrum": {
+      "token_id": 5,
+      "overall": 87,
+      "content_hash": "466:67bb9d6bd8cc4175",
+      "verification": 60,
+      "rug_level": "MEDIUM",
+      "badge": "MODERATE_RISK",
+      "rug_flags": [
+        "UPGRADEABLE_PROXY",
+        "HIDDEN_OWNER"
+      ],
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "vs_1_0_0": "was overall 89, verification 65, one flag. owner() answers 0x4dff9b5b0143e642a3f63a5bcf2d1c328e600bf8, so HIDDEN_OWNER joins UPGRADEABLE_PROXY - a live key AND replaceable logic, which is a materially different thing to hold than either alone.",
+      "why_it_matters_here": "This is the second chain, and it proves the fallback is not an ethereum-only arrangement: arbitrum-one-rpc.publicnode.com answered and `owner` is in sources_ok."
+    }
+  },
+  "portfolio_result": {
+    "call": "batch_scan([USDT, PEPE, LINK, SUSHI], 'ethereum') on studionet 0x19063FE1",
+    "returned": {
+      "requested": 4,
+      "scored": 3,
+      "coverage_pct": 75,
+      "portfolio_score": 87,
+      "mean_score": 87,
+      "flagged_tokens": 2,
+      "total_rug_flags": 5,
+      "high_risk_tokens": 0,
+      "order": "SUSHI (unscored, rank 1), USDT 85, PEPE 88, LINK 90"
+    },
+    "why_unscored_sorts_first": "An address nobody has checked is the one a holder should look at first, and it carries weight 0 so it moves no aggregate. A zero score would otherwise place it beside the worst real result, which says something the oracle does not know.",
+    "weighting": "All three scored tokens sit in the top market-cap bucket, so weight 6 each and the weighted score equals the plain mean. The two diverge when the buckets do - a dust-sized token cannot drag the headline down as hard as a large holding.",
+    "comma_separated_form": {
+      "call": "batch_scan('USDT,usdt-again-lowercase,SUSHI', 'ethereum')",
+      "returned": "requested 2 - the duplicate collapsed - scored 1, total_rug_flags 4, portfolio_score 85",
+      "why": "A duplicate is a paste slip, not a second holding. The cap is counted AFTER de-duplication, so six pasted lines of which two are the same token are five tokens and are accepted."
+    }
+  },
+  "rescan_result": {
+    "call": "rescan_token(1) on studionet 0x19063FE1, 28 minutes after USDT's first scan",
+    "round": "MAJORITY_AGREE, ACCEPTED. New score_id 6, seq 2.",
+    "read_back": {
+      "overall_score": 85,
+      "previous_overall": 85,
+      "risk_delta": 0,
+      "has_previous": true,
+      "content_hash": "465:96149d87575442e3"
+    },
+    "the_distinction_this_proves": "risk_delta 0 with has_previous TRUE is 'unchanged'. The first scan read risk_delta 0 with has_previous FALSE, which is 'nothing to compare against'. Both are zero and they are not the same claim - a UI reading the number alone would report 'unchanged' for a token's very first scan. That is the whole reason prev_seq is stored beside prev_overall.",
+    "determinism_across_time": "The re-scan reproduced content_hash 465:96149d87575442e3 exactly - the same 32 ordinals, 28 minutes and one consensus round later, on a live token whose holder count and transfer window both moved underneath it. That is quantization doing its job: the ladders absorbed the drift.",
+    "get_risk_history(1)": {
+      "returned": 2,
+      "capacity": 12,
+      "update_count": 2,
+      "best_overall": 85,
+      "worst_overall": 85,
+      "window_delta": 0,
+      "latest_delta": 0,
+      "per_record": "newest has_previous true / previous_overall 85; oldest has_previous false / previous_overall 0",
+      "get_history_by_address": "returns the identical two records for the same token"
+    }
+  },
+  "verifiability_1_1_0": {
+    "call": "verify_risk(1)",
+    "result": "valid true, failed [] - all thirteen checks pass over the 32-ordinal evidence",
+    "content_hash": "465:96149d87575442e3"
+  },
+  "composability_1_1_0": {
+    "consumer": "0xcb9c1E7214B4e610c28A3E8242d9bc2b793A8193",
+    "preview_listing(USDT, ethereum)": "overall 85, rug_level MEDIUM, badge MODERATE_RISK, confidence HIGH",
+    "note": "RiskConsumer needed no change for the milestone: it calls only get_risk, is_safe, require_safe, check_rug_pull, get_badge and get_stats, none of which changed signature."
+  },
+  "stats_after_the_demo": {
+    "tokens_tracked": 5,
+    "total_scored": 6,
+    "avg_overall": 86,
+    "rug_levels": {
+      "CRITICAL": 0,
+      "HIGH": 0,
+      "LOW": 0,
+      "MEDIUM": 4,
+      "NONE": 2
+    }
   }
 }
