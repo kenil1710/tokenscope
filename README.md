@@ -57,6 +57,7 @@ blocked on a broken upstream endpoint and refuse rather than guess
 
 Scored live on Studio Devnet:
 
+<!-- live-scores:begin -->
 | Token | Chain | `token_id` | Overall | Verification | Rug level | Content hash | Rug flags |
 |---|---|---:|---:|---:|---|---|---|
 | USDT | ethereum | 1 | **85** | 70 | MEDIUM | `465:96149d87575442e3` | MINTABLE, PAUSABLE, HAS_BLACKLIST, HIDDEN_OWNER |
@@ -64,6 +65,7 @@ Scored live on Studio Devnet:
 | LINK | ethereum | 3 | **91** | 75 | NONE | `465:4444482302bdb457` | none |
 | SHIB | ethereum | 4 | **83** | 75 | NONE | `465:e96d339961dcdd26` | none |
 | USDT0 | arbitrum | 5 | **87** | 60 | MEDIUM | `466:2e6ecd3983a68c36` | UPGRADEABLE_PROXY, HIDDEN_OWNER |
+<!-- live-scores:end -->
 
 All five with `sources_ok: address,contract,creation,holders,owner,transfers` —
 every source resolved, the `owner()` probe included. Same rubric, five
@@ -855,7 +857,7 @@ once value is attached.
 
 ```bash
 python3 test/test_logic.py
-# 303 tests, 653 assert statements, 7,088 assertions executed
+# 314 tests, 674 assert statements, 7,136 assertions executed
 # stdlib only - no chain, no network, no model, no genlayer install
 ```
 
@@ -864,7 +866,7 @@ ordinal lattice: every feature key, over its entire declared range, asserting
 that no combination can produce an out-of-range dimension, a non-multiple of 5,
 or an unknown rug level.
 
-**163 of those tests are new in 1.1.0** — the four new flags and the owner
+**174 of those tests are new in 1.1.0** — the four new flags and the owner
 probe's five response classes, `token_id` and the frozen delta, `rescan_token`,
 both history reads, `batch_scan`'s parsing, aggregates and ordering, and the
 minifier's renaming pass.
@@ -973,7 +975,13 @@ npm run typecheck && npm run lint && npm run build
 python3 tools/minify_contract.py contracts/TokenScope.py  -o build/TokenScope.min.py
 python3 tools/minify_contract.py contracts/RiskConsumer.py -o build/RiskConsumer.min.py
 python3 tools/audit.py          # cross-file consistency, incl. the v0.6 invariants
-python3 test/test_logic.py      # 303 tests, stdlib only
+python3 test/test_logic.py      # 314 tests, stdlib only
+
+# The live-score table below is generated, not typed. This rewrites it and
+# deployments.json from `get_risk` on the deployed oracle; --check fails
+# instead of writing, which is the form for CI.
+python3 tools/refresh_live_scores.py
+python3 tools/refresh_live_scores.py --check
 bash tools/deploy_studio_dev.sh
 ```
 
