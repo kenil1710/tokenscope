@@ -57,23 +57,39 @@ blocked on a broken upstream endpoint and refuse rather than guess
 
 Scored live on Studio Devnet:
 
-| Token | Chain | Address | Overall | Content hash | Rug flags |
-|---|---|---|---:|---|---|
-| USDT | ethereum | `0xdAC17F95…31ec7` | **85** | `465:96149d87575442e3` | MINTABLE, PAUSABLE, HAS_BLACKLIST, HIDDEN_OWNER |
-| PEPE | ethereum | `0x69825081…11933` | **88** | `465:dc9cf40900e26bdf` | HAS_BLACKLIST |
-| LINK | ethereum | `0x51491077…f986ca` | **90** | `465:3f90b2e299927c0e` | none |
-| SHIB | ethereum | `0x95ad61b0…64c4ce` | **83** | `465:e96d339961dcdd26` | none |
-| USDT0 | arbitrum | `0xFd086bC7…FCbb9` | **87** | `466:67bb9d6bd8cc4175` | UPGRADEABLE_PROXY, HIDDEN_OWNER |
+| Token | Chain | `token_id` | Overall | Verification | Rug level | Content hash | Rug flags |
+|---|---|---:|---:|---:|---|---|---|
+| USDT | ethereum | 1 | **85** | 70 | MEDIUM | `465:96149d87575442e3` | MINTABLE, PAUSABLE, HAS_BLACKLIST, HIDDEN_OWNER |
+| PEPE | ethereum | 2 | **86** | 70 | MEDIUM | `465:3904ad2a3fed4a48` | HAS_BLACKLIST |
+| LINK | ethereum | 3 | **91** | 75 | NONE | `465:4444482302bdb457` | none |
+| SHIB | ethereum | 4 | **83** | 75 | NONE | `465:e96d339961dcdd26` | none |
+| USDT0 | arbitrum | 5 | **87** | 60 | MEDIUM | `466:2e6ecd3983a68c36` | UPGRADEABLE_PROXY, HIDDEN_OWNER |
 
 All five with `sources_ok: address,contract,creation,holders,owner,transfers` —
 every source resolved, the `owner()` probe included. Same rubric, five
 different risk shapes.
 
-That USDT hash is worth a second look. `465:96149d87575442e3` is what the
-**pre-port** artifact produced, and it is what the **v0.6 port** produced here
-on a different chain, under a different SDK, with a different validator set.
-Moving a contract between VM dialects moved none of the 32 agreed ordinals —
-which is the only claim a hash like that can make, and the one worth making.
+**Three of those five hashes are byte-identical to what the pre-port artifact
+produced** on a different chain, under a different SDK, with a different
+validator set: USDT, LINK and SHIB. Every storage declaration and every error
+type in the contract was rewritten in between and not one of their 32 agreed
+ordinals moved.
+
+The two that differ are worth naming rather than glossing, because a
+determinism claim is only as good as its exceptions:
+
+- **PEPE** `465:dc9cf40900e26bdf` → `465:3904ad2a3fed4a48`. Exactly one
+  ordinal moved: `owner_risk`, 0 → 1. That is **the single
+  model-influenced ordinal** in the whole vector — the three yes/no questions
+  about residual ABI functions — and it is worth 7 of verification's 110
+  points, which is why `overall` moved 88 → 86. The documented bound on the
+  model is 3 points of 100 overall; this is inside it.
+- **USDT0** `466:67bb9d6bd8cc4175` → `466:2e6ecd3983a68c36`, with `overall`
+  unchanged at 87. Arbitrum's holder and transfer windows genuinely moved
+  between the two scans; quantization absorbed it, which is what the ladders
+  are for.
+
+Neither is the port. The port is the three that reproduced exactly.
 
 **Arbitrum needed retries, and that is worth saying out loud.** Its `/holders`
 answers 200 but takes ~7.5s for 25 KB, and five sequential fetches at that
@@ -234,10 +250,10 @@ instead of 62 or 100, rescaled the same way a missing ABI already was.
 
 | token | chain | `owner()` answers | flags | `verification` | overall |
 |---|---|---|---|---|---|
-| USDT | ethereum | `0xc6cd…a828` — a live key | MINTABLE, PAUSABLE, HAS_BLACKLIST, **HIDDEN_OWNER** | 70 *(was 75)* | 85 *(86)* |
+| USDT | ethereum | `0xc6cd…a828` — a live key | MINTABLE, PAUSABLE, HAS_BLACKLIST, **HIDDEN_OWNER** | 70 *(1.0.0: 75)* | 85 *(86)* |
 | USDT0 | arbitrum | `0x4dff…0bf8` — a live key | UPGRADEABLE_PROXY, **HIDDEN_OWNER** | 60 *(65)* | 87 *(89)* |
-| PEPE | ethereum | `0x000…000` — renounced | HAS_BLACKLIST | **80** *(75)* | 88 *(87)* |
-| LINK | ethereum | reverts — no `owner()` | none | 75 | 90 |
+| PEPE | ethereum | `0x000…000` — renounced | HAS_BLACKLIST | 70 | 86 *(87)* |
+| LINK | ethereum | reverts — no `owner()` | none | 75 | 91 |
 | SHIB | ethereum | reverts — no `owner()` | none | 75 | 83 |
 
 Every one of those five has `owner` in its `sources_ok`, including the two
@@ -789,25 +805,34 @@ All thirteen checks pass: the record reproduces itself from its own integers —
 29 of them for a 1.0.0 record, 32 for a 1.1.0 one, and `verify_risk` reads the
 count off the evidence rather than assuming it.
 
-### PEPE is where 1.1.0 shows up in the arithmetic
+### PEPE is where the owner probe shows up in the arithmetic
 
-The same token on the 1.1.0 oracle scores **88**, and `verification` moves
-**75 → 80**. Nothing about PEPE changed; what changed is that the contract can
-now *read* that its ownership really was renounced — `owner()` answers
-`0x000…000` — instead of inferring from the ABI that an `owner` function
-existing meant an owner existed. `sources_ok` gains `owner`, and no
-`HIDDEN_OWNER` flag is raised:
+PEPE's ownership **is** renounced, and 1.0.0 could not see it. Its ABI has an
+`owner` function, so the old inference called it owned — which kept `MINTABLE`
+counting against a contract nobody can mint from. 1.1.0 reads `owner()`, gets
+`0x000…000`, and reports the fact:
 
 ```json
-{ "symbol": "PEPE", "overall_score": 88, "verification_score": 80,
+{ "symbol": "PEPE", "overall_score": 86, "verification_score": 70,
   "rug_flags": ["HAS_BLACKLIST"], "rug_level": "MEDIUM",
-  "content_hash": "465:dc9cf40900e26bdf",
-  "sources_ok": "address,contract,creation,holders,owner,transfers" }
+  "content_hash": "465:3904ad2a3fed4a48",
+  "sources_ok": "address,contract,creation,holders,owner,transfers",
+  "checks": { "owner_is_live": false },
+  "mitigations": { "ownership_renounced": true }, "owner_probe": true }
 ```
 
-Set against USDT on the same oracle — `HIDDEN_OWNER`, `verification 70` — that
-is the whole feature in two rows: the same check, opposite answers, both
-proved rather than guessed.
+`ownership_renounced: true` with `owner_probe: true` is the claim 1.0.0 could
+not make. Set against USDT on the same oracle — `HIDDEN_OWNER`,
+`owner_is_live: true` — that is the whole feature in two rows: the same check,
+opposite answers, both proved rather than guessed.
+
+The owner-liveness term is worth **+10 of verification's 110**, and PEPE earns
+it. Its verification still reads 70 here rather than 80 because a *different*
+ordinal moved between scans: `owner_risk` went 0 → 1, the one
+model-influenced value in the vector, worth 7 points. Two independent effects
+landing on one dimension is exactly why the evidence vector is published
+alongside the score — `get_evidence(2)` shows which of the 32 moved, and the
+answer is not the one the headline number would suggest.
 
 Governance cannot move a score. Weights, ladders and point tables are module
 constants, not storage. The owner sets the fee (0…0.1 GEN), pauses new scoring

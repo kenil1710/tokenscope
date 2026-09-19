@@ -82,5 +82,175 @@
       "full_log": "docs/PROBE.md sections 11 and 12"
     },
     "retired_networks": "Deploy-ceiling and CLI-compatibility measurements for the networks this project used to target are kept in docs/PROBE.md sections 11 and 12, dated, because the figures were measured rather than assumed and the method transfers. They are history, not configuration."
+  },
+  "live_scores": {
+    "network": "studio-dev 0xf68f3743f9783185C0D8C45aff20f9d712949d02",
+    "what_these_show": "Five tokens across two chains and all three owner-probe response classes. USDT and USDT0 answer a live address; PEPE answers the zero address; LINK and SHIB revert because they have no owner() at all. All five carry `owner` in sources_ok, because a revert is an ANSWER - and they land on different verification scores because of what the answer was.",
+    "USDT ethereum": {
+      "token_id": 1,
+      "chain": "ethereum",
+      "overall": 85,
+      "distribution": 70,
+      "activity": 100,
+      "verification": 70,
+      "maturity": 100,
+      "liquidity": 95,
+      "rug_level": "MEDIUM",
+      "badge": "MODERATE_RISK",
+      "confidence": "HIGH",
+      "rug_flags": [
+        "MINTABLE",
+        "PAUSABLE",
+        "HAS_BLACKLIST",
+        "HIDDEN_OWNER"
+      ],
+      "sources_ok": "address",
+      "content_hash": "465:96149d87575442e3",
+      "note": "owner() = 0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828, a live key, so HIDDEN_OWNER fires and the liveness term costs 10 of verification's 110. The rug level does NOT escalate: USDT is verified, old, widely held and not concentrated, so the ladder reads the key as centralisation rather than a rug."
+    },
+    "PEPE ethereum": {
+      "token_id": 2,
+      "chain": "ethereum",
+      "overall": 86,
+      "distribution": 80,
+      "activity": 95,
+      "verification": 70,
+      "maturity": 100,
+      "liquidity": 90,
+      "rug_level": "MEDIUM",
+      "badge": "MODERATE_RISK",
+      "confidence": "HIGH",
+      "rug_flags": [
+        "HAS_BLACKLIST"
+      ],
+      "sources_ok": "address",
+      "content_hash": "465:3904ad2a3fed4a48",
+      "note": "THE CASE THE OWNER PROBE EXISTS FOR. PEPE has an `owner` function AND has renounced; 1.0.0's ABI inference called it owned. owner() answers 0x000...000, so check_rug_pull reports ownership_renounced true with owner_probe true."
+    },
+    "LINK ethereum": {
+      "token_id": 3,
+      "chain": "ethereum",
+      "overall": 91,
+      "distribution": 90,
+      "activity": 100,
+      "verification": 75,
+      "maturity": 100,
+      "liquidity": 95,
+      "rug_level": "NONE",
+      "badge": "VERIFIED_SAFE",
+      "confidence": "HIGH",
+      "rug_flags": [],
+      "sources_ok": "address",
+      "content_hash": "465:4444482302bdb457",
+      "note": "owner() reverts - no owner function at all. A clean `execution reverted` is an ANSWER, so src_owner is set and `owner` appears in sources_ok even though no address was read."
+    },
+    "SHIB ethereum": {
+      "token_id": 4,
+      "chain": "ethereum",
+      "overall": 83,
+      "distribution": 60,
+      "activity": 100,
+      "verification": 75,
+      "maturity": 100,
+      "liquidity": 90,
+      "rug_level": "NONE",
+      "badge": "VERIFIED_SAFE",
+      "confidence": "HIGH",
+      "rug_flags": [],
+      "sources_ok": "address",
+      "content_hash": "465:e96d339961dcdd26",
+      "note": "owner() reverts, like LINK."
+    },
+    "USDT0 arbitrum": {
+      "token_id": 5,
+      "chain": "arbitrum",
+      "overall": 87,
+      "distribution": 90,
+      "activity": 95,
+      "verification": 60,
+      "maturity": 100,
+      "liquidity": 95,
+      "rug_level": "MEDIUM",
+      "badge": "MODERATE_RISK",
+      "confidence": "HIGH",
+      "rug_flags": [
+        "UPGRADEABLE_PROXY",
+        "HIDDEN_OWNER"
+      ],
+      "sources_ok": "address",
+      "content_hash": "466:2e6ecd3983a68c36",
+      "note": "Second chain, and proof the probe's publicnode-first fallback is not an ethereum-only arrangement. A live key AND replaceable logic is a materially different thing to hold than either alone."
+    }
+  },
+  "cross_format_determinism": {
+    "claim": "Porting the contract from the pre-v0.6 dialect to v0.6 moved no ordinal.",
+    "reproduced_exactly": {
+      "USDT": "465:96149d87575442e3",
+      "LINK": "465:4444482302bdb457",
+      "SHIB": "465:e96d339961dcdd26"
+    },
+    "differed_and_why": {
+      "PEPE": "465:dc9cf40900e26bdf -> 465:3904ad2a3fed4a48. Exactly one ordinal moved: owner_risk 0 -> 1. That is the single model-influenced value in the vector, worth 7 of verification's 110 points, which moved overall 88 -> 86. The documented bound on the model is 3 points of 100 overall; this is inside it.",
+      "USDT0": "466:67bb9d6bd8cc4175 -> 466:2e6ecd3983a68c36, overall unchanged at 87. Arbitrum's holder and transfer windows genuinely moved between scans and quantization absorbed it, which is what the ladders are for."
+    },
+    "why_it_is_worth_stating": "Three of five hashes are byte-identical across a VM dialect change, a different chain, a different SDK and a different validator set - after every storage declaration and error type in the contract was rewritten. The two that differ are accounted for by one model ordinal and by real drift, not by the port."
+  },
+  "rescan_result": {
+    "call": "rescan_token(1) on USDT, ~29 minutes after its first scan",
+    "read_back": {
+      "score_id": 6,
+      "seq": 2,
+      "overall_score": 85,
+      "previous_overall": 85,
+      "risk_delta": 0,
+      "has_previous": true,
+      "content_hash": "465:96149d87575442e3"
+    },
+    "the_distinction_this_proves": "risk_delta 0 with has_previous TRUE is 'unchanged'. The first scan read risk_delta 0 with has_previous FALSE, which is 'nothing to compare against'. Same number, different claim.",
+    "get_risk_history(1)": {
+      "returned": 2,
+      "capacity": 12,
+      "update_count": 2,
+      "best_overall": 85,
+      "worst_overall": 85,
+      "window_delta": 0,
+      "latest_delta": 0
+    }
+  },
+  "portfolio_result": {
+    "call": "batch_scan([USDT, PEPE, LINK, SUSHI], 'ethereum')",
+    "returned": {
+      "requested": 4,
+      "scored": 3,
+      "coverage_pct": 75,
+      "portfolio_score": 87,
+      "mean_score": 87,
+      "flagged_tokens": 2,
+      "total_rug_flags": 5,
+      "high_risk_tokens": 0,
+      "order": "SUSHI (unscored, rank 1, weight 0), USDT 85, PEPE 86, LINK 91"
+    },
+    "why_unscored_sorts_first": "An address nobody has checked is the one a holder should look at first, and it carries weight 0 so it moves no aggregate."
+  },
+  "verifiability": {
+    "call": "verify_risk(1)",
+    "result": "valid true, failed [] - all thirteen checks pass over the 32-ordinal evidence",
+    "content_hash": "465:96149d87575442e3"
+  },
+  "composability": {
+    "consumer": "0x65B86007A22B06C6cdeCDF72BdA55dA8B4A92Eb1",
+    "preview_listing(USDT, ethereum)": "listable true, tier blue_chip, overall 85, rug_level MEDIUM, trade_cap 10000000, rug_flags include HIDDEN_OWNER",
+    "note": "Exercises gl.contract.interface, the v0.6 replacement for gl.contract_interface. RiskConsumer needed no other change: it calls only get_risk, is_safe, require_safe, check_rug_pull, get_badge and get_stats."
+  },
+  "stats_after_seeding": {
+    "tokens_tracked": 5,
+    "total_scored": 6,
+    "avg_overall": 86,
+    "per_chain": {
+      "ethereum": 4,
+      "arbitrum": 1,
+      "base": 0,
+      "polygon": 0
+    }
   }
 }
