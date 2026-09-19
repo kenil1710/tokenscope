@@ -188,6 +188,76 @@ def main() -> int:
         check(method in public or method.startswith("_"),
               f"{method} exists on the contract")
 
+    section("rejection patterns")
+    tree_ts = ast.parse(source)
+    cls = next(n for n in tree_ts.body
+               if isinstance(n, ast.ClassDef) and n.name == "TokenScope")
+    meths = {m.name: m for m in cls.body if isinstance(m, ast.FunctionDef)}
+
+    # 1. every rug flag reads only ordinals that consensus agreed on
+    rf = next(n for n in tree_ts.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_rug_flags")
+    read_keys = {n.slice.value for n in ast.walk(rf)
+                 if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant)}
+    vector = {k for k, _ in re.findall(
+        r'\("([a-z0-9_]+)", (\d+)\)',
+        re.search(r"FEATURE_RANGE = \((.*?)\n\)", source, re.S).group(1))}
+    check(read_keys <= vector,
+          f"every rug flag reads only agreed ordinals ({sorted(read_keys - vector) or 'ok'})")
+
+    # 2. no stored field is copied from the leader's payload
+    scan = meths["_scan"]
+    leaked = [t.attr for n in ast.walk(scan)
+              if isinstance(n, ast.Assign) and len(n.targets) == 1
+              and isinstance(t := n.targets[0], ast.Attribute)
+              and isinstance(t.value, ast.Name) and t.value.id == "rec"
+              and re.search(r"\bout\[", ast.unparse(n.value))]
+    check(not leaked, f"no stored field reads leader output {leaked or ''}")
+
+    # 4. every payable entry funnels into the one path that always refunds
+    payable = [n for n, m in meths.items()
+               if any("payable" in ast.unparse(d) for d in m.decorator_list)]
+    check(all("self._scan(" in ast.unparse(meths[n]) for n in payable),
+          f"every payable method delegates to _scan {payable}")
+    check("self._credit(sender, value - fee)" in ast.unparse(scan),
+          "the success path credits any overpayment back")
+
+    # 5. a pause cannot strand a refund, and the owner cannot reach one
+    check("self.paused" not in ast.unparse(meths["claim_refund"]),
+          "claim_refund ignores `paused`")
+    check("int(self.balance) - int(self.refunds_owed)" in ast.unparse(meths["withdraw"]),
+          "withdraw reserves refunds_owed")
+
+    # 11. the runner rejects str.replace
+    for rel in ("contracts/TokenScope.py", "contracts/RiskConsumer.py",
+                "build/TokenScope.min.py", "build/RiskConsumer.min.py"):
+        check(".replace(" not in read(rel), f"{rel}: no str.replace()")
+
+    section("custody is declared, and the declaration is checkable")
+    check('"custody": False' in source, "TokenScope declares custody: false")
+    check('"custody": False' in read("contracts/RiskConsumer.py"),
+          "RiskConsumer declares custody: false")
+    # Structural, not textual. The docstring that EXPLAINS these properties
+    # names every one of them, so a substring search finds its own comment
+    # and reports a failure that is not there.
+    ctree = ast.parse(read("contracts/RiskConsumer.py"))
+    ccls = next(n for n in ctree.body
+                if isinstance(n, ast.ClassDef) and n.name == "RiskConsumer")
+    cmeths = [m for m in ccls.body if isinstance(m, ast.FunctionDef)]
+    check(not [m for m in cmeths
+               if any("payable" in ast.unparse(d) for d in m.decorator_list)],
+          "RiskConsumer has no payable method")
+    reads_value = [n for n in ast.walk(ctree)
+                   if isinstance(n, ast.Attribute) and n.attr == "value"
+                   and ast.unparse(n).endswith("gl.message.value")]
+    check(not reads_value, "RiskConsumer never reads gl.message.value")
+    check(not [m for m in cmeths if m.name in ("__receive__",
+                                               "__handle_undefined_method__")],
+          "RiskConsumer does not override __receive__, so value transfers are refused")
+    check(not [n for n in ast.walk(ctree)
+               if isinstance(n, ast.Attribute) and n.attr == "emit_transfer"],
+          "RiskConsumer has no transfer path at all")
+
     print("\n" + ("AUDIT CLEAN" if not FAILURES
                   else f"{len(FAILURES)} PROBLEM(S)"))
     return 1 if FAILURES else 0
