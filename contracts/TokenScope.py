@@ -2619,6 +2619,28 @@ class TokenScope(gl.contract.Contract):
             "low_holder_line": LOW_HOLDER_LINE,
             "batch_max": BATCH_MAX,
             "owner_selector": OWNER_SELECTOR,
+            # Custody, stated rather than left to be inferred. "false" here
+            # is a claim about USER ASSETS, and it is worth being precise
+            # about what the contract does hold:
+            #   - it never touches the tokens it scores. It reads public
+            #     explorer documents; it takes no approval and holds no ERC-20.
+            #   - it does hold GEN, briefly: the fee, which is earned revenue,
+            #     and refundable credit for overpayment or a refused request.
+            #     That credit is the depositor's. claim_refund() never consults
+            #     `paused`, withdraw() subtracts refunds_owed before anything
+            #     leaves, and no owner method can move it. So the owner cannot
+            #     reach it and a pause cannot strand it.
+            # An owner who could freeze or take a depositor's balance would
+            # make "false" a lie; none can, and the tests pin each clause.
+            "custody": False,
+            "custody_detail": {
+                "scored_tokens": "never held; no approval is taken",
+                "user_deposits": "refundable credit only, claimable by the "
+                                 "depositor at any time including while paused",
+                "owner_can_take_user_funds": False,
+                "owner_can_freeze_refunds": False,
+                "reserved_from_withdraw_wei": int(self.refunds_owed),
+            },
             "rate_limit_seconds": RATE_LIMIT_SECONDS,
             "token_cooldown_seconds": TOKEN_COOLDOWN,
             "history_cap": HISTORY_CAP,

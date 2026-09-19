@@ -30,18 +30,18 @@ Contract, consumer, every score, and the app.
 
 | | address |
 |---|---|
-| **TokenScope** 1.1.0 | `0xf68f3743f9783185C0D8C45aff20f9d712949d02` |
-| **RiskConsumer** | `0x65B86007A22B06C6cdeCDF72BdA55dA8B4A92Eb1` |
+| **TokenScope** 1.1.0 | `0x1C97EFD1001BD26D5A41D1bBe4724302ee2Bb6E5` |
+| **RiskConsumer** | `0xAc501Bd4fd71A64AE61FC9Db42Ae5a25bED7Eea0` |
 
 ```bash
 genlayer network set studio-dev
-genlayer call 0xf68f3743f9783185C0D8C45aff20f9d712949d02 get_config
+genlayer call 0x1C97EFD1001BD26D5A41D1bBe4724302ee2Bb6E5 get_config
 ```
 
 Verify the deployed source against the artifact in this repository:
 
 ```bash
-genlayer code 0xf68f3743f9783185C0D8C45aff20f9d712949d02 | diff - build/TokenScope.min.py
+genlayer code 0x1C97EFD1001BD26D5A41D1bBe4724302ee2Bb6E5 | diff - build/TokenScope.min.py
 ```
 
 > **Studio Devnet runs the v0.6 contract format**, which is a different

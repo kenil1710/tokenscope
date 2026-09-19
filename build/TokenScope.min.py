@@ -1833,6 +1833,15 @@ class TokenScope(gl.contract.Contract):
   _0Q: _H,
   "batch_max": _h,
   "owner_selector": _S,
+  "custody": False,
+  "custody_detail": {
+  "scored_tokens": "never held; no approval is taken",
+  "user_deposits": "refundable credit only, claimable by the "
+                                 "depositor at any time including while paused",
+  "owner_can_take_user_funds": False,
+  "owner_can_freeze_refunds": False,
+  "reserved_from_withdraw_wei": int(self.refunds_owed),
+  },
   "rate_limit_seconds": _W,
   "token_cooldown_seconds": _af,
   "history_cap": _A,

@@ -307,6 +307,13 @@ class RiskConsumer(gl.contract.Contract):
         return {
             "oracle": self.oracle.as_hex,
             "owner": self.owner.as_hex,
+            # No payable method exists on this contract, it never reads
+            # gl.message.value, and it does not override __receive__ - which
+            # the runner treats as abstract, so a bare value transfer to this
+            # address is REFUSED rather than silently accrued. There is no
+            # path by which GEN can enter, and therefore none by which it
+            # could be trapped.
+            "custody": False,
             "min_score": int(self.min_score),
             "max_age_seconds": int(self.max_age_seconds),
             "max_rug_level": str(self.max_rug_level),

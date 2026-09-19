@@ -216,6 +216,7 @@ class RiskConsumer(gl.contract.Contract):
   return {
   "oracle": self.oracle.as_hex,
   "owner": self.owner.as_hex,
+  "custody": False,
   "min_score": int(self.min_score),
   "max_age_seconds": int(self.max_age_seconds),
   "max_rug_level": str(self.max_rug_level),

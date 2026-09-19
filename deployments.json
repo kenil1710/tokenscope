@@ -22,17 +22,17 @@
   "note": "Verify with: shasum -a 256 build/*.min.py against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py (the CLI appends trailing newlines; strip them).",
   "artifacts": {
     "build/TokenScope.min.py": {
-      "sha256": "e5ef09c9b924c4f31b447569663adba5f511202bed8dcc1a6daf617460465772",
-      "bytes": 51427,
+      "sha256": "a6a2632a49dfa4ba93270c29cc37d1ccb290dbdbdf0cc8c4441c28ba1dab7d2a",
+      "bytes": 51804,
       "source": "contracts/TokenScope.py",
-      "source_sha256": "870fe57017e01fba484a8f64f3802e64668ce2cc37bc9948b9c64ec03c0a5a52",
+      "source_sha256": "85f71b8f06602956d6cdf6f735139297eaf6796dc30be94fb4ccaff627bf870f",
       "name_map": "build/TokenScope.min.names.json"
     },
     "build/RiskConsumer.min.py": {
-      "sha256": "dceee5711552cfec179428dbca68c05013b0806f0c2ba77528a971db25232f30",
-      "bytes": 10655,
+      "sha256": "fb2f7a0dad295db3fc4ee6424b635cf0c8000b806f6b100d3e1296694c30ebf6",
+      "bytes": 10675,
       "source": "contracts/RiskConsumer.py",
-      "source_sha256": "3337e8a0e98fa74bc0d7ef1a5edc887ddfd18de029e41c8de3aeedf169590f70",
+      "source_sha256": "8a84ac867af81a594ebb42b6f6f4cc2443097957c2ff9de00eca31aa6e2966ae",
       "name_map": "build/RiskConsumer.min.names.json"
     }
   },
@@ -42,20 +42,25 @@
       "chain_id": "61997",
       "rpc": "https://studio-dev.genlayer.com/api",
       "TokenScope": {
-        "address": "0xf68f3743f9783185C0D8C45aff20f9d712949d02",
+        "address": "0x1C97EFD1001BD26D5A41D1bBe4724302ee2Bb6E5",
         "rubric_version": "1.1.0",
         "artifact": "build/TokenScope.min.py",
         "fee_note": "fee_wei set to 0 on this demo deployment. The CLI has no flag for attaching CONTRACT value to a write - --fee-value is the network fee deposit, a different thing - so a non-zero fee would make request_risk uncallable from the command line. The fee path is exercised in the offline suite.",
         "verified": "genlayer code <address> is byte-identical to build/TokenScope.min.py after stripping the trailing newlines the CLI adds. Checked after deploy."
       },
       "RiskConsumer": {
-        "address": "0x65B86007A22B06C6cdeCDF72BdA55dA8B4A92Eb1",
+        "address": "0xAc501Bd4fd71A64AE61FC9Db42Ae5a25bED7Eea0",
         "artifact": "build/RiskConsumer.min.py",
         "constructor_args": [
-          "0xf68f3743f9783185C0D8C45aff20f9d712949d02"
+          "0x1C97EFD1001BD26D5A41D1bBe4724302ee2Bb6E5"
         ]
       },
-      "writes_need_fees": "Every write reverts with FeeValueMustBeNonZero(1) unless BOTH --fees (the distribution object) and --fee-value are supplied. tools/deploy_studio_dev.sh reads them out of `genlayer estimate-fees --json`."
+      "writes_need_fees": "Every write reverts with FeeValueMustBeNonZero(1) unless BOTH --fees (the distribution object) and --fee-value are supplied. tools/deploy_studio_dev.sh reads them out of `genlayer estimate-fees --json`.",
+      "superseded": {
+        "TokenScope (pre-custody-disclosure)": "0xf68f3743f9783185C0D8C45aff20f9d712949d02",
+        "RiskConsumer (pre-custody-disclosure)": "0x65B86007A22B06C6cdeCDF72BdA55dA8B4A92Eb1",
+        "why_superseded": "The pre-submission audit found get_config made no custody statement at all. Both contracts now declare `custody: false` with the detail that makes it checkable rather than a slogan, and each clause is pinned by a test. Nothing else changed - no ordinal, no weight, no ladder."
+      }
     }
   },
   "milestone": {
@@ -252,5 +257,9 @@
       "base": 0,
       "polygon": 0
     }
+  },
+  "custody": {
+    "TokenScope": "get_config().custody is false, with custody_detail naming exactly what the contract does hold: the fee (earned revenue) and refundable credit. claim_refund never consults `paused`, withdraw subtracts refunds_owed before anything leaves, and no owner method can move a depositor's balance.",
+    "RiskConsumer": "get_policy().custody is false. It has no payable method, never reads gl.message.value, and does not override __receive__ - which the runner treats as abstract, so a bare value transfer to it is REFUSED rather than silently accrued. There is no path by which GEN can enter."
   }
 }

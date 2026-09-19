@@ -9,3 +9,6 @@ __pycache__/
 .accounts.json
 .deployed.json
 *.tsbuildinfo
+
+# Local agent/editor scratch files are excluded via .git/info/exclude,
+# which is per-clone and not committed.

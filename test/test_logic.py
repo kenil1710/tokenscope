@@ -233,6 +233,29 @@ class _Contract:
         return self
 
 
+TRANSFERS: list = []
+
+
+def _contract_interface(cls):
+    """Stands in for `gl.evm.contract_interface`.
+
+    The real decorator turns a declaration class into a factory: `_Payee(addr)`
+    returns a proxy with `emit_transfer`. The old stub was the identity
+    function, which meant `_Payee(who)` simply raised — so every refund path
+    was unreachable from the suite and `claim_refund` had never actually been
+    run. This records instead, so the tests can assert that the money moved
+    and how much."""
+
+    class _Proxy:
+        def __init__(self, address):
+            self.address = str(getattr(address, "as_hex", address))
+
+        def emit_transfer(self, value=0, **_kw):
+            TRANSFERS.append((self.address, int(value)))
+
+    return _Proxy
+
+
 def _install_stub() -> None:
     """A stand-in for the v0.6 `genlayer` package.
 
@@ -258,7 +281,7 @@ def _install_stub() -> None:
     mod.nondet = types.SimpleNamespace(web=web, exec_prompt=_offline)
     mod.public = types.SimpleNamespace(view=_identity, write=_WriteDeco())
     mod.private = _identity
-    mod.evm = types.SimpleNamespace(contract_interface=_identity)
+    mod.evm = types.SimpleNamespace(contract_interface=_contract_interface)
     mod.contract = types.SimpleNamespace(Contract=_Contract)
     mod.storage = types.SimpleNamespace(
         TreeMap=TreeMap, DynArray=DynArray, Array=DynArray, allow=_identity)
@@ -3476,6 +3499,159 @@ class TestIdentifierRenaming(unittest.TestCase):
                                len(self.text.encode("utf8")))
         finally:
             sys.path.remove(str(ROOT / "tools"))
+
+
+# --------------------------------------------------------------------------
+# custody, and the arithmetic that makes "conservative" more than a promise
+# --------------------------------------------------------------------------
+
+
+class TestCustodyClaims(unittest.TestCase):
+    """`get_config` says `custody: false`. Each clause of that claim is a
+    property of the code, so each one gets a test — a disclosure nothing
+    checks is a comment with better formatting."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_custody")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def test_config_declares_no_custody(self):
+        cfg = self.chain.c.get_config()
+        self.assertIs(cfg["custody"], False)
+        self.assertIs(cfg["custody_detail"]["owner_can_take_user_funds"], False)
+        self.assertIs(cfg["custody_detail"]["owner_can_freeze_refunds"], False)
+
+    def test_reserved_from_withdraw_tracks_refunds_owed(self):
+        self.chain.c._credit(_Address(WALLET_B), 4321)
+        self.assertEqual(
+            self.chain.c.get_config()["custody_detail"]["reserved_from_withdraw_wei"],
+            4321)
+
+    def test_the_owner_cannot_withdraw_money_owed_to_somebody_else(self):
+        """The whole of `custody: false` rests on this one."""
+        self.chain.c.balance = 10_000
+        self.chain.c._credit(_Address(WALLET_B), 9_000)
+        self.chain.sender(WALLET_A)          # WALLET_A is the owner
+        with self.assertRaises(_UserError) as caught:
+            self.chain.c.withdraw(WALLET_A, 2_000)
+        self.assertIn("withdrawable is 1000", caught.exception.data)
+        # exactly the free balance still works, and nothing more moved
+        TRANSFERS.clear()
+        self.chain.c.withdraw(WALLET_A, 1_000)
+        self.assertEqual([v for _a, v in TRANSFERS], [1_000])
+
+    def test_a_pause_cannot_strand_a_refund(self):
+        TRANSFERS.clear()
+        self.chain.c._credit(_Address(WALLET_B), 777)
+        self.chain.sender(WALLET_A)
+        self.chain.c.set_paused(True)
+        self.chain.sender(WALLET_B)
+        self.assertEqual(self.chain.c.claim_refund(), 777)
+        self.assertEqual(self.chain.c.get_refund(WALLET_B), 0)
+        # and the GEN actually left the contract
+        self.assertEqual([(a.lower(), v) for a, v in TRANSFERS],
+                         [(WALLET_B.lower(), 777)])
+
+    def test_claiming_twice_pays_once(self):
+        self.chain.c._credit(_Address(WALLET_B), 500)
+        self.chain.sender(WALLET_B)
+        self.assertEqual(self.chain.c.claim_refund(), 500)
+        with self.assertRaises(_UserError):
+            self.chain.c.claim_refund()
+
+    def test_refunds_owed_never_goes_negative_across_a_full_cycle(self):
+        for amount in (100, 250, 3):
+            self.chain.c._credit(_Address(WALLET_B), amount)
+        self.assertEqual(int(self.chain.c.refunds_owed), 353)
+        self.chain.sender(WALLET_B)
+        self.chain.c.claim_refund()
+        self.assertEqual(int(self.chain.c.refunds_owed), 0)
+
+    def test_the_contract_never_holds_a_scored_token(self):
+        """No approval is taken and no ERC-20 interface is declared — the
+        oracle reads explorer documents, it does not hold positions."""
+        source = SOURCE.read_text(encoding="utf8")
+        for forbidden in ("transferFrom", "approve(", "safeTransfer"):
+            self.assertNotIn(forbidden, source, forbidden)
+
+
+class TestConservativeWhenUnsourced(unittest.TestCase):
+    """A thin record must not be able to look like a verified one.
+
+    This is arithmetic, not convention, and the bound is worth pinning: the
+    `VERIFIED_SAFE` badge and the usual `is_safe` threshold both sit at 75, so
+    the question is whether a LOW-confidence record can reach 75. It cannot —
+    but only because of how the dimension weights and the source gates
+    interact, which is exactly the kind of property that breaks silently when
+    a weight is retuned."""
+
+    # an ordinal can only be non-zero when the document that produces it
+    # resolved; anything else is a vector extraction cannot emit
+    GATED = {
+        "src_abi": ["methods", "license", "certified", "mintable", "pausable",
+                    "blacklist", "owner_risk"],
+        "src_holders": ["top1", "top10", "supply_d", "top1_ctr"],
+        "src_created": ["age"],
+        "src_transfers": ["xfer_ct", "uniq", "xfer_rec", "xfer_rate"],
+        "src_owner": ["hidden_owner"],
+    }
+
+    def _best_per_confidence(self):
+        import itertools
+        ranges = dict(M.FEATURE_RANGE)
+        srcs = list(self.GATED) + ["src_addr"]
+        best = {}
+        for combo in itertools.product([0, 1], repeat=len(srcs)):
+            on = dict(zip(srcs, combo))
+            if not on["src_addr"]:
+                continue
+            f = {k: 0 for k in ranges}
+            f.update(on)
+            for k in ranges:
+                if k in srcs:
+                    continue
+                gate = next((g for g, ks in self.GATED.items() if k in ks), None)
+                f[k] = 0 if (gate and not on[gate]) else ranges[k]
+            f["verified"] = 2 if on["src_abi"] else 1
+            f["proxy_v"] = 2
+            if not (on["src_abi"] or on["src_owner"]):
+                f["renounced"] = 0
+            for k in ("scam", "mintable", "pausable", "blacklist", "upgradeable",
+                      "hidden_owner", "hold_lo", "owner_risk"):
+                f[k] = 0
+            s = M._score(f)
+            c = s["confidence"]
+            if c not in best or s["overall"] > best[c][0]:
+                best[c] = (s["overall"], s["badge"])
+        return best
+
+    def test_a_low_confidence_record_cannot_reach_the_safe_threshold(self):
+        best = self._best_per_confidence()
+        ceiling, badge = best["LOW"]
+        self.assertLess(ceiling, 75,
+                        f"a LOW-confidence record reached {ceiling}, which is "
+                        "at or above the VERIFIED_SAFE / is_safe threshold")
+        self.assertNotEqual(badge, "VERIFIED_SAFE")
+
+    def test_verified_safe_needs_at_least_medium_confidence(self):
+        best = self._best_per_confidence()
+        for conf, (_, badge) in best.items():
+            if badge == "VERIFIED_SAFE":
+                self.assertIn(conf, ("MEDIUM", "HIGH"), conf)
+
+    def test_an_unsourced_dimension_contributes_nothing_rather_than_guessing(self):
+        f = feats(src_addr=1, verified=1, proxy_v=2)
+        for fn in (M._dim_distribution, M._dim_activity, M._dim_maturity):
+            self.assertEqual(fn(f), (0, 0))
+        self.assertEqual(M._score(f)["confidence"], "LOW")
+
+    def test_is_safe_refuses_a_token_with_no_record_at_all(self):
+        module = load_full(SOURCE, "tokenscope_issafe")
+        chain = _Chain(module)
+        self.assertFalse(chain.c.is_safe(USDT, "ethereum", 0))
 
 
 if __name__ == "__main__":
