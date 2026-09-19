@@ -109,17 +109,18 @@
         "HAS_BLACKLIST",
         "HIDDEN_OWNER"
       ],
-      "sources_ok": "address",
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
       "content_hash": "465:96149d87575442e3",
-      "note": "owner() = 0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828, a live key, so HIDDEN_OWNER fires and the liveness term costs 10 of verification's 110. The rug level does NOT escalate: USDT is verified, old, widely held and not concentrated, so the ladder reads the key as centralisation rather than a rug."
+      "note": "owner() = 0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828, a live key, so HIDDEN_OWNER fires and the liveness term costs 10 of verification's 110. The rug level does NOT escalate: USDT is verified, old, widely held and not concentrated, so the ladder reads the key as centralisation rather than a rug.",
+      "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7"
     },
     "PEPE ethereum": {
       "token_id": 2,
       "chain": "ethereum",
-      "overall": 86,
+      "overall": 89,
       "distribution": 80,
-      "activity": 95,
-      "verification": 70,
+      "activity": 100,
+      "verification": 80,
       "maturity": 100,
       "liquidity": 90,
       "rug_level": "MEDIUM",
@@ -128,9 +129,10 @@
       "rug_flags": [
         "HAS_BLACKLIST"
       ],
-      "sources_ok": "address",
-      "content_hash": "465:3904ad2a3fed4a48",
-      "note": "THE CASE THE OWNER PROBE EXISTS FOR. PEPE has an `owner` function AND has renounced; 1.0.0's ABI inference called it owned. owner() answers 0x000...000, so check_rug_pull reports ownership_renounced true with owner_probe true."
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "content_hash": "465:80c67dc2e1c504f6",
+      "note": "THE CASE THE OWNER PROBE EXISTS FOR. PEPE has an `owner` function AND has renounced; 1.0.0's ABI inference called it owned. owner() answers 0x000...000, so check_rug_pull reports ownership_renounced true with owner_probe true.",
+      "address": "0x6982508145454ce325ddbe47a25d4ec3d2311933"
     },
     "LINK ethereum": {
       "token_id": 3,
@@ -145,9 +147,10 @@
       "badge": "VERIFIED_SAFE",
       "confidence": "HIGH",
       "rug_flags": [],
-      "sources_ok": "address",
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
       "content_hash": "465:4444482302bdb457",
-      "note": "owner() reverts - no owner function at all. A clean `execution reverted` is an ANSWER, so src_owner is set and `owner` appears in sources_ok even though no address was read."
+      "note": "owner() reverts - no owner function at all. A clean `execution reverted` is an ANSWER, so src_owner is set and `owner` appears in sources_ok even though no address was read.",
+      "address": "0x514910771af9ca656af840dff83e8264ecf986ca"
     },
     "SHIB ethereum": {
       "token_id": 4,
@@ -162,16 +165,17 @@
       "badge": "VERIFIED_SAFE",
       "confidence": "HIGH",
       "rug_flags": [],
-      "sources_ok": "address",
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
       "content_hash": "465:e96d339961dcdd26",
-      "note": "owner() reverts, like LINK."
+      "note": "owner() reverts, like LINK.",
+      "address": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce"
     },
     "USDT0 arbitrum": {
       "token_id": 5,
       "chain": "arbitrum",
-      "overall": 87,
+      "overall": 88,
       "distribution": 90,
-      "activity": 95,
+      "activity": 100,
       "verification": 60,
       "maturity": 100,
       "liquidity": 95,
@@ -182,9 +186,10 @@
         "UPGRADEABLE_PROXY",
         "HIDDEN_OWNER"
       ],
-      "sources_ok": "address",
-      "content_hash": "466:2e6ecd3983a68c36",
-      "note": "Second chain, and proof the probe's publicnode-first fallback is not an ethereum-only arrangement. A live key AND replaceable logic is a materially different thing to hold than either alone."
+      "sources_ok": "address,contract,creation,holders,owner,transfers",
+      "content_hash": "466:1cd163feb7e71c5b",
+      "note": "Second chain, and proof the probe's publicnode-first fallback is not an ethereum-only arrangement. A live key AND replaceable logic is a materially different thing to hold than either alone.",
+      "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"
     }
   },
   "cross_format_determinism": {

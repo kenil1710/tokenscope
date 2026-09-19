@@ -61,10 +61,10 @@ Scored live on Studio Devnet:
 | Token | Chain | `token_id` | Overall | Verification | Rug level | Content hash | Rug flags |
 |---|---|---:|---:|---:|---|---|---|
 | USDT | ethereum | 1 | **85** | 70 | MEDIUM | `465:96149d87575442e3` | MINTABLE, PAUSABLE, HAS_BLACKLIST, HIDDEN_OWNER |
-| PEPE | ethereum | 2 | **86** | 70 | MEDIUM | `465:3904ad2a3fed4a48` | HAS_BLACKLIST |
+| PEPE | ethereum | 2 | **89** | 80 | MEDIUM | `465:80c67dc2e1c504f6` | HAS_BLACKLIST |
 | LINK | ethereum | 3 | **91** | 75 | NONE | `465:4444482302bdb457` | none |
 | SHIB | ethereum | 4 | **83** | 75 | NONE | `465:e96d339961dcdd26` | none |
-| USDT0 | arbitrum | 5 | **87** | 60 | MEDIUM | `466:2e6ecd3983a68c36` | UPGRADEABLE_PROXY, HIDDEN_OWNER |
+| USDT0 | arbitrum | 5 | **88** | 60 | MEDIUM | `466:1cd163feb7e71c5b` | UPGRADEABLE_PROXY, HIDDEN_OWNER |
 <!-- live-scores:end -->
 
 All five with `sources_ok: address,contract,creation,holders,owner,transfers` —
@@ -78,20 +78,27 @@ type in the contract was rewritten in between and not one of their 32 agreed
 ordinals moved.
 
 The two that differ are worth naming rather than glossing, because a
-determinism claim is only as good as its exceptions:
+determinism claim is only as good as its exceptions — and both have now been
+watched across four separate scans, which is more informative than one diff.
 
-- **PEPE** `465:dc9cf40900e26bdf` → `465:3904ad2a3fed4a48`. Exactly one
-  ordinal moved: `owner_risk`, 0 → 1. That is **the single
-  model-influenced ordinal** in the whole vector — the three yes/no questions
-  about residual ABI functions — and it is worth 7 of verification's 110
-  points, which is why `overall` moved 88 → 86. The documented bound on the
-  model is 3 points of 100 overall; this is inside it.
-- **USDT0** `466:67bb9d6bd8cc4175` → `466:2e6ecd3983a68c36`, with `overall`
-  unchanged at 87. Arbitrum's holder and transfer windows genuinely moved
-  between the two scans; quantization absorbed it, which is what the ladders
-  are for.
+- **PEPE** is the model's own variance, and it oscillates. Across four rounds
+  `owner_risk` went **0 → 1 → 0**, moving `verification` 80 ↔ 70 and `overall`
+  between 86 and 89. That is **the single model-influenced ordinal** in the
+  whole vector — three yes/no questions about the residual ABI functions no
+  keyword table recognised — and it is worth 7 of verification's 110 points.
+  The documented bound is that the model can move 3 points of 100 overall;
+  every observed swing is inside it. Nothing else in PEPE's vector moved, and
+  `renounced: 1` / `hidden_owner: 0` held on every round.
+- **USDT0** is real drift. Its hash has been different on every scan while
+  `overall` stayed within a point (87–88): Arbitrum's holder and transfer
+  windows genuinely move between reads, and quantization absorbs it. That is
+  what the ladders are for.
 
-Neither is the port. The port is the three that reproduced exactly.
+Neither is the port. The port is the three that reproduce exactly, every time.
+
+That distinction is the reason the score is published beside its evidence
+vector: `get_evidence(id)` names *which* of the 32 ordinals moved, so "the
+number changed" and "the token changed" never have to be guessed apart.
 
 **Arbitrum needed retries, and that is worth saying out loud.** Its `/holders`
 answers 200 but takes ~7.5s for 25 KB, and five sequential fetches at that
@@ -815,9 +822,9 @@ counting against a contract nobody can mint from. 1.1.0 reads `owner()`, gets
 `0x000…000`, and reports the fact:
 
 ```json
-{ "symbol": "PEPE", "overall_score": 86, "verification_score": 70,
+{ "symbol": "PEPE", "overall_score": 89, "verification_score": 80,
   "rug_flags": ["HAS_BLACKLIST"], "rug_level": "MEDIUM",
-  "content_hash": "465:3904ad2a3fed4a48",
+  "content_hash": "465:80c67dc2e1c504f6",
   "sources_ok": "address,contract,creation,holders,owner,transfers",
   "checks": { "owner_is_live": false },
   "mitigations": { "ownership_renounced": true }, "owner_probe": true }
@@ -829,12 +836,15 @@ not make. Set against USDT on the same oracle — `HIDDEN_OWNER`,
 opposite answers, both proved rather than guessed.
 
 The owner-liveness term is worth **+10 of verification's 110**, and PEPE earns
-it. Its verification still reads 70 here rather than 80 because a *different*
-ordinal moved between scans: `owner_risk` went 0 → 1, the one
-model-influenced value in the vector, worth 7 points. Two independent effects
-landing on one dimension is exactly why the evidence vector is published
-alongside the score — `get_evidence(2)` shows which of the 32 moved, and the
-answer is not the one the headline number would suggest.
+it — its verification reads 80 here.
+
+Watch that number across scans, though, and it moves between 70 and 80
+without anything about PEPE's ownership changing. The cause is a *different*
+ordinal: `owner_risk`, the one model-influenced value in the vector, worth 7
+points, which has been observed at 0, then 1, then 0 again. Two independent
+effects landing on the same dimension is exactly why the evidence vector is
+published beside the score — `get_evidence(2)` names which of the 32 moved,
+and it is not the one the headline number would suggest.
 
 Governance cannot move a score. Weights, ladders and point tables are module
 constants, not storage. The owner sets the fee (0…0.1 GEN), pauses new scoring
