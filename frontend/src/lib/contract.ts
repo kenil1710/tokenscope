@@ -15,6 +15,7 @@
 import { CONTRACT_ADDRESS, getReadClient, getWalletClient } from "./genlayer";
 import type {
   BadgeReport,
+  BatchScan,
   ChainName,
   Comparison,
   ComparisonMissing,
@@ -100,12 +101,40 @@ export async function getRiskById(scoreId: number): Promise<RiskRecord | null> {
   return payload.found ? (payload as RiskRecord) : null;
 }
 
-export function getRiskHistory(
+/**
+ * History by token_id — the read that pairs with `rescanToken`.
+ *
+ * Addressed by the integer the contract issued rather than by an address the
+ * user typed, so a re-scan and the history it lands in cannot disagree about
+ * which token they mean.
+ */
+export function getRiskHistory(tokenId: number): Promise<RiskHistory> {
+  return read<RiskHistory>("get_risk_history", [tokenId]);
+}
+
+/** The same data for a caller that only has an address. */
+export function getHistoryByAddress(
   token: string,
   chain: ChainName,
   count = 12,
 ): Promise<RiskHistory> {
-  return read<RiskHistory>("get_risk_history", [token, chain, count]);
+  return read<RiskHistory>("get_history_by_address", [token, chain, count]);
+}
+
+/**
+ * The portfolio read: up to five addresses on one chain, sorted riskiest
+ * first, with the aggregates computed on-chain rather than in this browser.
+ *
+ * It is a READ. It does not score anything — `unscored` names the addresses
+ * that still need a `request_risk`, and the page turns those into a loop. The
+ * contract's own docstring explains why a five-token consensus round is not
+ * something that settles.
+ */
+export function batchScan(
+  addresses: string[],
+  chain: ChainName,
+): Promise<BatchScan> {
+  return read<BatchScan>("batch_scan", [addresses, chain]);
 }
 
 export function getRiskTrend(token: string, chain: ChainName): Promise<RiskTrend> {
@@ -202,6 +231,26 @@ export async function requestRisk(
     address: CONTRACT_ADDRESS,
     functionName: "request_risk",
     args: [token, chain] as never,
+    value: fee,
+  }) as Promise<TransactionHash>;
+}
+
+/**
+ * Re-score a token the contract has already seen, by its token_id. Payable.
+ *
+ * Same round, same fee, same cooldown as `requestRisk` — the only difference
+ * is that the token is named by an integer the contract issued, so a refresh
+ * cannot land on a near-miss address and quietly start a second feed.
+ */
+export async function rescanToken(
+  account: `0x${string}`,
+  tokenId: number,
+  fee: bigint,
+): Promise<TransactionHash> {
+  return getWalletClient(account).writeContract({
+    address: CONTRACT_ADDRESS,
+    functionName: "rescan_token",
+    args: [tokenId] as never,
     value: fee,
   }) as Promise<TransactionHash>;
 }

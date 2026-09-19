@@ -51,7 +51,7 @@ const STEPS = [
   {
     icon: Fingerprint,
     title: "They agree on a feature vector",
-    body: "Not on a score. 29 bucketed ordinals, compared exactly with no tolerance. Bucket width is the consensus margin.",
+    body: "Not on a score. 32 bucketed ordinals, compared exactly with no tolerance. Bucket width is the consensus margin.",
   },
   {
     icon: FileSearch,
@@ -90,10 +90,12 @@ export default async function LandingPage() {
                 </h1>
 
                 <p className="mt-5 max-w-xl text-base leading-relaxed text-ink-600 sm:text-lg">
-                  TokenScope scores any ERC-20 on five dimensions and reads rug-pull
-                  risk straight out of the verified ABI — mint, pause, blacklist,
-                  upgradeable proxy. Every score is agreed by independent validators
-                  and stored on-chain, so you can re-check the arithmetic yourself.
+                  TokenScope scores any ERC-20 on five dimensions and reads
+                  rug-pull risk straight out of the public record — mint,
+                  pause, blacklist, upgradeable proxy, a live owner key, a
+                  majority holder, a token nobody holds. Every score is agreed
+                  by independent validators and stored on-chain, so you can
+                  re-check the arithmetic yourself.
                 </p>
 
                 <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -103,6 +105,12 @@ export default async function LandingPage() {
                   >
                     Scan a token
                     <ArrowRight className="size-4" aria-hidden />
+                  </Link>
+                  <Link
+                    href="/portfolio"
+                    className="inline-flex items-center gap-2 rounded-xl border border-hairline bg-surface px-5 py-3 text-sm font-semibold text-ink-700 transition hover:border-ink-300"
+                  >
+                    Rate a portfolio
                   </Link>
                   <Link
                     href="/explore"

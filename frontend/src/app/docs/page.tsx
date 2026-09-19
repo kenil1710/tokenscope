@@ -88,7 +88,7 @@ export default function DocsPage() {
                 <p>
                   So TokenScope never asks validators to agree on a score. It asks them
                   to agree on a <strong className="text-ink-900">feature vector</strong>:
-                  29 small integers, each a bucket index. The score is a pure function of
+                  32 small integers, each a bucket index. The score is a pure function of
                   that vector, so agreement on the vector <em>is</em> agreement on the
                   score — exactly, with no tolerance anywhere.
                 </p>
@@ -162,16 +162,36 @@ export default function DocsPage() {
                   rendered page.
                 </p>
                 <p>
-                  Live on USDT this returns MINTABLE, PAUSABLE and HAS_BLACKLIST, and
-                  each is correct: its supply control really is{" "}
+                  Live on USDT this returns MINTABLE, PAUSABLE, HAS_BLACKLIST
+                  and HIDDEN_OWNER, and each is correct: its supply control
+                  really is{" "}
                   <code className="rounded bg-ink-50 px-1 font-mono text-xs">issue</code>,
-                  and its freeze is{" "}
+                  its freeze is{" "}
                   <code className="rounded bg-ink-50 px-1 font-mono text-xs">pause</code>{" "}
                   plus{" "}
                   <code className="rounded bg-ink-50 px-1 font-mono text-xs">
                     addBlackList
                   </code>
-                  .
+                  , and{" "}
+                  <code className="rounded bg-ink-50 px-1 font-mono text-xs">
+                    owner()
+                  </code>{" "}
+                  really does answer a live address rather than a burn one.
+                </p>
+                <p>
+                  Eleven flags, and <strong className="text-ink-900">every one
+                  of them is a lookup, not a judgement</strong> — bar the last,
+                  which says so. Each card below names the document it was read
+                  from, so none of it has to be taken on trust.
+                </p>
+                <p>
+                  What it does <em>not</em> do is escalate on sight. A live
+                  owner key on a token that is verified, years old, widely held
+                  and not concentrated is centralisation, not a rug — so USDT
+                  stays MEDIUM. On a two-day-old token with forty holders and
+                  80% in one wallet, the same key is the rug and the ladder
+                  says so. A rule without that qualifier would paint a rug
+                  warning on USDT and teach you to ignore the badge.
                 </p>
               </div>
 
@@ -189,6 +209,9 @@ export default function DocsPage() {
                     </div>
                     <p className="mt-1.5 text-sm leading-relaxed text-ink-600">
                       {meta.detail}
+                    </p>
+                    <p className="mt-1.5 text-xs text-ink-400">
+                      Read from <span className="font-medium">{meta.source}</span>
                     </p>
                   </div>
                 ))}
@@ -224,24 +247,55 @@ export default function DocsPage() {
                 </div>
               </div>
 
-              <div className="mt-5 rounded-xl border border-warn-500/25 bg-warn-50 p-5">
-                <h3 className="text-sm font-semibold text-warn-700">
-                  One honest limit: &ldquo;ownership renounced&rdquo;
+              <div className="mt-5 rounded-xl border border-safe-500/25 bg-safe-50 p-5">
+                <h3 className="text-sm font-semibold text-safe-700">
+                  A limit that 1.1.0 removed: &ldquo;ownership renounced&rdquo;
                 </h3>
-                <p className="mt-2 text-sm leading-relaxed text-warn-700/90">
-                  Blockscout exposes no way to read a contract&rsquo;s <em>current</em>{" "}
-                  owner — its read-methods endpoint is a 404. So TokenScope does not
-                  claim to know that ownership was renounced. It reports the checkable
-                  fact instead: whether the ABI has an owner, admin, governance or
-                  authority function at all, surfaced as{" "}
+                <p className="mt-2 text-sm leading-relaxed text-safe-700/90">
+                  1.0.0 said this plainly and it was true at the time: Blockscout
+                  exposes no way to read a contract&rsquo;s <em>current</em> owner —
+                  its read-methods endpoint is a 404 — so TokenScope reported only the
+                  weaker checkable fact, whether the ABI had an owner-shaped function
+                  at all. PEPE is what that cost: it <em>has</em> an{" "}
+                  <code className="rounded bg-surface px-1 font-mono text-xs">owner</code>{" "}
+                  function <em>and</em> has renounced, and the inference called it
+                  owned.
+                </p>
+                <p className="mt-2 text-sm leading-relaxed text-safe-700/90">
+                  What the original probe missed is that the same explorer serves
+                  JSON-RPC at{" "}
                   <code className="rounded bg-surface px-1 font-mono text-xs">
-                    no_owner_surface
+                    /api/eth-rpc
                   </code>
-                  . That is weaker than reading{" "}
+                  , where one{" "}
                   <code className="rounded bg-surface px-1 font-mono text-xs">
-                    owner() == 0x0
-                  </code>
-                  , and it is labelled as the weaker thing.
+                    eth_call
+                  </code>{" "}
+                  of{" "}
+                  <code className="rounded bg-surface px-1 font-mono text-xs">
+                    owner()
+                  </code>{" "}
+                  answers it outright. 1.1.0 makes that call, binds the result as the{" "}
+                  <code className="rounded bg-surface px-1 font-mono text-xs">
+                    hidden_owner
+                  </code>{" "}
+                  ordinal, and reports{" "}
+                  <code className="rounded bg-surface px-1 font-mono text-xs">
+                    ownership_renounced
+                  </code>{" "}
+                  only when a burn address actually came back. A clean{" "}
+                  <em>execution reverted</em> is an answer — the contract has no{" "}
+                  <code className="rounded bg-surface px-1 font-mono text-xs">
+                    owner()
+                  </code>{" "}
+                  — while a throttle or a 5xx is transient and fails the whole round
+                  rather than putting a node-dependent bit in the vector. When the
+                  probe does not resolve at all,{" "}
+                  <code className="rounded bg-surface px-1 font-mono text-xs">
+                    owner_probe
+                  </code>{" "}
+                  is false and the old caveat is reported per-record instead of
+                  standing permanently.
                 </p>
               </div>
             </section>

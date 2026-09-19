@@ -22,7 +22,7 @@ a dishonest leader gets room to move the number; narrow it and honest nodes
 disagree. There is no setting that is both safe and live.
 
 TokenScope never asks validators to agree on a score. It asks them to agree on a
-**feature vector**: 29 small integers, each a bucket index. The score is a pure
+**feature vector**: 32 small integers, each a bucket index. The score is a pure
 function of the vector, so agreement on the vector *is* agreement on the score,
 exactly and with no tolerance anywhere.
 
@@ -65,7 +65,7 @@ and disagree about a token neither read differently.
 The agreed object is `{features, symbol, name, scores, hash}`, and every part of
 it is checked:
 
-- **`features`** — the 29 ordinals, compared through `_canon` (sorted keys, plain
+- **`features`** — the 32 ordinals, compared through `_canon` (sorted keys, plain
   ints) so two nodes that agree produce identical bytes.
 - **`symbol` / `name`** — bound so a leader cannot relabel a record it otherwise
   reported honestly, and sanitized before comparison so an unsanitized string
@@ -162,11 +162,15 @@ Two details worth stating:
 - **Minting only counts against a token whose owner still exists.** A mint
   function on a contract with no ownership surface cannot be called by anybody,
   which is what renouncing is *for*.
-- **`ownership_renounced` is reported honestly.** Blockscout exposes no way to
-  read a contract's current owner — its read-methods endpoint is a 404 — so the
-  contract does not claim to know that ownership was renounced. It reports the
-  checkable fact: whether the ABI has an owner, admin, governance or authority
-  function at all. The field is surfaced as `no_owner_surface`.
+- **`ownership_renounced` is a reading, not an inference — since 1.1.0.** The
+  original probe found `/smart-contracts/{a}/methods-read` returns 404 and
+  concluded the current owner was unreadable, so 1.0.0 reported only the weaker
+  checkable fact: whether the ABI has an owner-shaped function at all. That was
+  honest and it was also wrong in the direction that matters — PEPE *has* an
+  `owner` function and *has* renounced, and the inference called it owned.
+  1.1.0 reads `owner()` over the explorer's own JSON-RPC (`docs/PROBE.md`
+  section 10) and reports `ownership_renounced` only when a burn address came
+  back. `owner_probe` says which of the two a reader is looking at.
 
 ## 6. Where the model is used — and the bound on it
 
@@ -245,3 +249,142 @@ ordinal's declared ceiling, so a reader can inspect what the validators bound
 without trusting the scores stored beside it.
 
 Nothing in either path trusts anything written next to the evidence.
+
+---
+
+## 11. Milestone 1.1.0
+
+Three additions. Every one of them is subject to everything above — nothing
+here is exempt from the consensus rule, and nothing here asks the model
+anything it was not already asked.
+
+### 11.1 Four more rug flags, and one closed hole
+
+The vector went from **29 ordinals to 32**: `hidden_owner`, `hold_lo` and
+`src_owner`. Because `_digest` prefixes the hash with the canonical length, no
+1.1.0 hash can collide with a 1.0.0 one — the prefix moved from `422` to `465`
+on USDT, which is the record saying out loud that it is a different kind of
+record.
+
+| flag | decided from | ordinal |
+|---|---|---|
+| `HIDDEN_OWNER` | `eth_call owner()` via `/api/eth-rpc` | `hidden_owner` |
+| `UNVERIFIED_SOURCE` | `is_verified` on the anchor | `verified == 0` |
+| `LOW_HOLDER_COUNT` | `holders_count` on the anchor, line at 50 | `hold_lo` |
+| `CONCENTRATED_SUPPLY` | top holder share, line at 50% | `top1 <= 2` |
+
+Two of those are 1.0.0 flags under the milestone's names, and the rename was
+the right call rather than a cosmetic one: adding a second flag that fires on
+exactly the condition `UNVERIFIED` already fired on would double-count in every
+aggregate that counts flags — including `batch_scan`'s `total_rug_flags`.
+`CONCENTRATED_SUPPLY` also moved its line from the 75% rung to the 50% rung, so
+it now means what its name says. The rug **ladder** still keys its severe rungs
+off 75%, so loosening the flag did not loosen the verdict.
+
+**A live owner escalates in proportion to how unestablished the token is.**
+This is the part worth arguing with. USDT's owner really can mint and really
+can freeze — but USDT is verified, eight years old, held by millions and not
+concentrated, so `weak` is false and the live key stays a MEDIUM
+centralisation finding. On a two-day-old token with forty holders and 80% in
+one wallet, the same key is the rug. A ladder that read "live owner + mint →
+HIGH" with no qualifier would paint `RUG_WARNING` on USDT and teach every user
+to ignore the badge.
+
+**Three response classes, and the line between two of them.** An address (or a
+burn address) is an answer; so is `execution reverted`, which is how a contract
+says it has no `owner()`. A **404 or 400** is a missing document — every node
+POSTs identical bytes to the same URL, so both mean the same thing to all of
+them, and verification rescales exactly as it does for a missing ABI.
+Everything else — 401, 403, 408, 425, 429, any 5xx, and a 200 whose body
+carries neither `result` nor `error` — is **transient**: this node being
+refused right now, propagated so the whole round refuses and the fee comes
+back.
+
+**Two hosts, fixed order.** Blockscout's own JSON-RPC is burst-limited and a
+consensus round is a burst by construction, so the probe leads with publicnode
+and falls back to Blockscout. That is safe here and would not be for a scored
+quantity: both read the same chain, the answer is one bit, and the order is
+fixed so a round cannot split on which host answered. A refusal from the first
+host is tried against the second; a refusal from both fails the round.
+
+That line between transient and missing was in the wrong place in the first
+build, which read *every* 4xx as a missing document. PEPE caught it on the first demo round: `src_owner 0`,
+no `owner` in `sources_ok`, on a round where the same URL answered 200 by hand
+seconds later. Five validators had been throttled together and the throttle
+was being recorded as a property of the token — the precise failure the
+`_try_json` docstring already warned about for `/holders`, reintroduced in a
+new place.
+
+`hidden_owner` also costs points: **10 of verification's total**, available only
+when the probe resolved. Verification's availability is now 62, 72, 100 or 110
+rather than 62 or 100, and `_score` rescales against whichever applies — the
+same mechanism the dimension already used for a missing ABI. USDT's
+verification went 75 → 70 and its overall 86 → 85 on exactly this.
+
+### 11.2 Rescan, and a delta that stays true
+
+`rescan_token(token_id)` is the same round as `request_risk` — same fee, same
+cooldown, same consensus — and both funnel into one private `_scan`, so a
+re-scan cannot drift from a first scan. A test asserts that `run_nondet_unsafe`
+appears exactly once in the source.
+
+The `token_id` is the 1-based position in the append-only `tokens` array,
+issued on first sight and never reused. Naming a re-scan by an integer the
+contract issued rather than by an address a human retyped matters here
+specifically: a near-miss address does not fail, it silently starts a *second
+feed*, and the refresh the user asked for lands somewhere they will never look.
+
+**The previous score travels on the record.** `prev_overall` and `prev_seq` are
+frozen at write time rather than looked up. The history is a 12-slot ring
+buffer, and once it laps, the record a delta was measured against is gone — a
+delta recomputed from the two newest *surviving* rows would quietly start
+answering a different question and would never look wrong. `prev_seq == 0`
+distinguishes "no previous score" from "a delta of zero", which are not the
+same claim and must not render as the same sentence.
+
+### 11.3 `batch_scan` is a read, and that is the design
+
+Up to five addresses on one chain, sorted riskiest first, with the aggregates
+computed on-chain: weighted portfolio score, flagged tokens, total rug flags,
+worst finding, coverage.
+
+It does **not** run five consensus rounds. Scoring one token is five HTTP
+documents, one or two JSON-RPC calls and one model call inside a single leader
+execution, repeated by every validator. Five tokens is thirty fetches in one
+round — and the *single*-token round for USDT0 on Arbitrum already came back
+`LEADER_TIMEOUT` several times before it settled, because that chain's
+`/holders` page takes ~7.5s on its own (`deployments.json → live_scores`). A
+five-token round would not be a bolder feature; it would be a round that never
+settles, and a round that never settles writes nothing. The portfolio would
+come back empty after five fees.
+
+So the split is: `request_risk` and `rescan_token` buy consensus, one token per
+transaction; `batch_scan` reads what consensus already agreed and does the
+arithmetic across it. `unscored` names the addresses still needing a round,
+which is what makes the portfolio page a loop rather than a guess.
+
+**Weighting is by market-cap bucket**, because a pasted list of addresses
+carries no balances. Equal weighting would let a dust-sized token drag a
+portfolio's headline down as hard as its largest holding. `mcap` is already an
+agreed ordinal, so weighting by it costs nothing and cannot be forged, and
+`mean_score` is reported beside it so the weighting is never the only number on
+offer.
+
+### 11.4 What the deployable artifact cost
+
+The three features added ~8.7 KB to the minified artifact, which would have put
+it at 59,532 bytes against a 53,000-byte budget. `tools/minify_contract.py`
+gained an **identifier-renaming pass** — scope-resolved, not textual — that
+renames module-level privates and function locals while leaving every public
+method, every public parameter, every class, every storage field, every
+attribute and every string value untouched. 59,532 → 51,390.
+
+The file used to say identifier renaming was refused. That was the right call
+while it would have been a regex over the text; it is the wrong call once the
+pass resolves names the way Python does. Two bugs it shipped on the first
+attempt, both caught by the existing suite before any deploy: `except X as e`
+binds a name that is not a `Name` node, and a nested `def` binds its own
+identifier in the enclosing scope. `TestDeployableArtifact` re-runs the entire
+battery through the renamed module and asserts identical output, and the
+minifier writes a name map beside the artifact so the tests can still reach
+`_score` under whatever it is now called.

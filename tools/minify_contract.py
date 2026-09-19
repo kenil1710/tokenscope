@@ -43,6 +43,9 @@ import argparse
 import ast
 import builtins
 import io
+import json
+import keyword
+import re
 import sys
 import tokenize
 from pathlib import Path
@@ -162,6 +165,433 @@ def _reindent(source: str, spaces_per_level: int) -> str:
             continue
         out.append(" " * (spaces_per_level * depth) + line.lstrip())
     return "\n".join(out)
+
+
+# --------------------------------------------------------------------------
+# identifier renaming
+# --------------------------------------------------------------------------
+
+
+class _Scope:
+    """One Python name-resolution scope.
+
+    `kind` matters for lookup, not for bookkeeping: a CLASS scope is skipped
+    when a nested function resolves a free variable, which is the one rule
+    that separates Python's scoping from the obvious recursive one.
+    """
+
+    __slots__ = ("node", "kind", "parent", "bound", "globals", "nonlocals",
+                 "children", "renames")
+
+    def __init__(self, node, kind: str, parent: "_Scope | None"):
+        self.node = node
+        self.kind = kind
+        self.parent = parent
+        self.bound: set[str] = set()
+        self.globals: set[str] = set()
+        self.nonlocals: set[str] = set()
+        self.children: list[_Scope] = []
+        self.renames: dict[str, str] = {}
+        if parent is not None:
+            parent.children.append(self)
+
+
+_SCOPE_NODES = (
+    ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
+    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+)
+
+
+def _build_scopes(tree: ast.Module) -> tuple[_Scope, dict]:
+    """The scope tree, plus a map from every Name/arg node to its scope.
+
+    Bindings are collected exactly as Python does it: a name assigned anywhere
+    in a function body is local to that function for the WHOLE body, including
+    the lines above the assignment.
+    """
+    module = _Scope(tree, "module", None)
+    owner: dict[int, _Scope] = {}
+
+    def bind(scope: _Scope, name: str) -> None:
+        if name not in scope.globals and name not in scope.nonlocals:
+            scope.bound.add(name)
+
+    def walk(node, scope: _Scope) -> None:
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope)
+
+    def visit(node, scope: _Scope) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bind(scope, node.name)
+            # Decorators, defaults and annotations are evaluated in the
+            # ENCLOSING scope, so they are visited there, not inside.
+            for deco in node.decorator_list:
+                visit(deco, scope)
+            for default in node.args.defaults + [
+                d for d in node.args.kw_defaults if d is not None
+            ]:
+                visit(default, scope)
+            inner = _Scope(node, "function", scope)
+            arguments = node.args
+            every = (list(arguments.posonlyargs) + list(arguments.args)
+                     + list(arguments.kwonlyargs))
+            if arguments.vararg is not None:
+                every.append(arguments.vararg)
+            if arguments.kwarg is not None:
+                every.append(arguments.kwarg)
+            for argument in every:
+                inner.bound.add(argument.arg)
+                owner[id(argument)] = inner
+                if argument.annotation is not None:
+                    visit(argument.annotation, scope)
+            if node.returns is not None:
+                visit(node.returns, scope)
+            for statement in node.body:
+                visit(statement, inner)
+            return
+        if isinstance(node, ast.Lambda):
+            for default in node.args.defaults + [
+                d for d in node.args.kw_defaults if d is not None
+            ]:
+                visit(default, scope)
+            inner = _Scope(node, "function", scope)
+            every = (list(node.args.posonlyargs) + list(node.args.args)
+                     + list(node.args.kwonlyargs))
+            if node.args.vararg is not None:
+                every.append(node.args.vararg)
+            if node.args.kwarg is not None:
+                every.append(node.args.kwarg)
+            for argument in every:
+                inner.bound.add(argument.arg)
+                owner[id(argument)] = inner
+            visit(node.body, inner)
+            return
+        if isinstance(node, ast.ClassDef):
+            bind(scope, node.name)
+            for deco in node.decorator_list:
+                visit(deco, scope)
+            for base in node.bases:
+                visit(base, scope)
+            for keyword in node.keywords:
+                visit(keyword.value, scope)
+            inner = _Scope(node, "class", scope)
+            for statement in node.body:
+                visit(statement, inner)
+            return
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp,
+                             ast.GeneratorExp)):
+            inner = _Scope(node, "function", scope)
+            for index, generator in enumerate(node.generators):
+                # The OUTERMOST iterable is evaluated in the enclosing scope.
+                visit(generator.iter, scope if index == 0 else inner)
+                visit(generator.target, inner)
+                for condition in generator.ifs:
+                    visit(condition, inner)
+            if isinstance(node, ast.DictComp):
+                visit(node.key, inner)
+                visit(node.value, inner)
+            else:
+                visit(node.elt, inner)
+            return
+        if isinstance(node, ast.Global):
+            scope.globals.update(node.names)
+            scope.bound.difference_update(node.names)
+            return
+        if isinstance(node, ast.Nonlocal):
+            scope.nonlocals.update(node.names)
+            scope.bound.difference_update(node.names)
+            return
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bind(scope, (alias.asname or alias.name).split(".")[0])
+            return
+        if isinstance(node, ast.Name):
+            owner[id(node)] = scope
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                bind(scope, node.id)
+            return
+        if isinstance(node, ast.ExceptHandler):
+            if node.name:
+                bind(scope, node.name)
+                owner[id(node)] = scope
+            walk(node, scope)
+            return
+        walk(node, scope)
+
+    for statement in tree.body:
+        visit(statement, module)
+    return module, owner
+
+
+def _resolve(scope: _Scope, name: str) -> _Scope | None:
+    """The scope that owns `name` as seen from `scope`, or None for a builtin.
+
+    Class scopes are skipped for anything but a direct hit, which is why a
+    method body cannot see its own class's attributes as bare names.
+    """
+    current: _Scope | None = scope
+    first = True
+    while current is not None:
+        if not first and current.kind == "class":
+            current = current.parent
+            continue
+        if name in current.bound:
+            return current
+        if name in current.globals:
+            root = current
+            while root.parent is not None:
+                root = root.parent
+            return root if name in root.bound else None
+        first = False
+        current = current.parent
+    return None
+
+
+def _public(node) -> bool:
+    """True for a method GenVM exposes, whose parameter NAMES are its ABI."""
+    for deco in getattr(node, "decorator_list", []):
+        parts = []
+        cursor = deco
+        while isinstance(cursor, ast.Attribute):
+            parts.append(cursor.attr)
+            cursor = cursor.value
+        if isinstance(cursor, ast.Name):
+            parts.append(cursor.id)
+        if "gl" in parts and "public" in parts:
+            return True
+    return False
+
+
+_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _rename_identifiers(source: str) -> tuple[str, dict, dict]:
+    """Shortens every identifier that is nobody else's business.
+
+    The header of this file used to say identifier renaming was refused. That
+    was the right call while it would have been a regex over the text; it is
+    the wrong call once the pass resolves names the way Python does. What
+    changed is not the appetite for risk, it is that the pass now knows which
+    scope owns each name — and `test_logic.py` re-runs the entire battery
+    against the renamed artifact and asserts identical output, so a rename
+    that changed behaviour would fail before it could be deployed.
+
+    TWO tiers, and the distinction is what keeps the contract callable:
+
+    - **Module-level private names** — `_score`, `FEATURE_RANGE`, the ladders.
+      Renamed everywhere they resolve. Class names are never touched, nor is
+      anything imported, nor any public name.
+    - **Function locals** — every binding inside a function body, including
+      its parameters, EXCEPT the parameters of a `@gl.public.*` method, which
+      are the contract's ABI, and `self`.
+
+    A nested function shares its parent's name pool, so a closure reading a
+    free variable reads the same short name the parent wrote. Nothing is ever
+    renamed into a name that is already visible where it is used.
+
+    Storage fields, dataclass fields, every attribute and every dict key are
+    untouched: this pass only ever rewrites `ast.Name`, `ast.arg` and the
+    identifier of a `def` it is already renaming, so `rec.overall_score` and
+    `f["top1"]` come out exactly as they went in.
+
+    Returns the rewritten source, the module-level old -> new map (written
+    beside the artifact so the tests can reach the renamed internals), and
+    every `def` rename including the nested ones, which the caller needs to
+    tell a legitimate rename apart from a definition that went missing.
+    """
+    tree = ast.parse(source)
+    module, owner = _build_scopes(tree)
+
+    reserved = set(dir(builtins))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            reserved.add(node.attr)
+        elif isinstance(node, ast.alias):
+            reserved.add((node.asname or node.name.split(".")[0]))
+        elif isinstance(node, ast.ClassDef):
+            reserved.add(node.name)
+    reserved.update(module.globals)
+
+    # --- tier 1: module-level privates.
+    keep: set[str] = set(module.bound)
+    renameable: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if statement.name.startswith("_") and not _public(statement):
+                renameable.add(statement.name)
+        elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            targets = (statement.targets if isinstance(statement, ast.Assign)
+                       else [statement.target])
+            for target in targets:
+                if isinstance(target, ast.Name) and _is_constant(target.id):
+                    renameable.add(target.id)
+    renameable -= reserved
+    # A module name that some function also binds locally is left alone: the
+    # local would shadow it, and proving that shadow harmless is not worth the
+    # bytes it saves.
+    shadowed: set[str] = set()
+
+    def collect_shadows(scope: _Scope) -> None:
+        if scope is not module:
+            shadowed.update(scope.bound)
+        for child in scope.children:
+            collect_shadows(child)
+
+    collect_shadows(module)
+    renameable -= shadowed
+
+    pool = _name_pool("_", reserved | keep)
+    for name in sorted(renameable):
+        module.renames[name] = next(pool)
+
+    module_names = set(module.renames.values())
+
+    # --- tier 2: function locals.
+    #
+    # One pool per OUTERMOST function, shared with everything nested inside
+    # it. That is the rule that makes closures safe: `leader_fn` reading the
+    # `task` its enclosing method bound must read the same short name the
+    # method wrote, and it will, because neither pool ever hands out a name
+    # the other used. A class body is not a function, so each method starts a
+    # pool of its own and they all get the one-character names.
+    def assign_locals(scope: _Scope, taken: set[str], pool_iter) -> None:
+        if scope.kind == "class":
+            for child in scope.children:
+                fresh = set(reserved | module_names | keep)
+                assign_locals(child, fresh, _name_pool("", fresh))
+            return
+        if scope.kind == "function":
+            node = scope.node
+            protected = {"self"}
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node):
+                arguments = node.args
+                for argument in (list(arguments.posonlyargs)
+                                 + list(arguments.args)
+                                 + list(arguments.kwonlyargs)):
+                    protected.add(argument.arg)
+                if arguments.vararg is not None:
+                    protected.add(arguments.vararg.arg)
+                if arguments.kwarg is not None:
+                    protected.add(arguments.kwarg.arg)
+            for name in sorted(scope.bound):
+                if name in protected or name in scope.globals:
+                    continue
+                if name in scope.nonlocals:
+                    continue
+                short = next(pool_iter)
+                scope.renames[name] = short
+                taken.add(short)
+        for child in scope.children:
+            assign_locals(child, taken, pool_iter)
+
+    for child in module.children:
+        base = reserved | module_names | keep
+        assign_locals(child, set(base), _name_pool("", base))
+
+    # --- rewrite, back to front so earlier offsets stay valid.
+    edits: list[tuple[int, int, int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            scope = owner.get(id(node))
+            if scope is None:
+                continue
+            home = _resolve(scope, node.id)
+            if home is None:
+                continue
+            new = home.renames.get(node.id)
+            if new is not None:
+                edits.append((node.lineno, node.col_offset,
+                              node.col_offset + len(node.id), new))
+        elif isinstance(node, ast.arg):
+            scope = owner.get(id(node))
+            if scope is None:
+                continue
+            new = scope.renames.get(node.arg)
+            if new is not None:
+                edits.append((node.lineno, node.col_offset,
+                              node.col_offset + len(node.arg), new))
+
+    lines = source.split("\n")
+
+    # The `def` itself. A FunctionDef carries no Name node for its own
+    # identifier, so without this the body would call `_aB` while the
+    # definition still said `_score`. Located by searching forward from the
+    # node's own column rather than by assuming `len("def ")`, which is wrong
+    # for `async def` and for anything a future Python puts in between.
+    #
+    # EVERY def, not only the module-level ones: `_scan` binds `leader_fn` and
+    # `validator_fn` as ordinary locals, so they are renamed like any other
+    # local and their definitions have to follow. Missing this shipped a
+    # `run_nondet_unsafe(n, H)` whose `n` and `H` were never defined - caught
+    # by the undefined-name check in test_logic.py, which is exactly the class
+    # of bug it was written for.
+    def_renames: dict[str, str] = {}
+
+    def rename_defs(scope: _Scope) -> None:
+        for child in scope.children:
+            node = child.node
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                new = scope.renames.get(node.name)
+                if new is not None:
+                    line = lines[node.lineno - 1]
+                    at = line.find(node.name, node.col_offset)
+                    if at < 0:
+                        raise SystemExit(
+                            f"cannot locate `def {node.name}` to rename it")
+                    edits.append((node.lineno, at, at + len(node.name), new))
+                    def_renames[node.name] = new
+            rename_defs(child)
+
+    rename_defs(module)
+
+    # `except X as name:` binds `name`, and the binding is a plain string on
+    # the handler rather than a Name node - so the body's uses were being
+    # renamed while the binding was not.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler) or not node.name:
+            continue
+        scope = owner.get(id(node))
+        if scope is None:
+            continue
+        new = scope.renames.get(node.name)
+        if new is None:
+            continue
+        line = lines[node.lineno - 1]
+        match = re.search(r"\bas\s+" + re.escape(node.name) + r"\s*:", line)
+        if match is None:
+            raise SystemExit(f"cannot locate `except ... as {node.name}`")
+        at = line.index(node.name, match.start())
+        edits.append((node.lineno, at, at + len(node.name), new))
+
+    for lineno, start, end, new in sorted(edits, reverse=True):
+        line = lines[lineno - 1]
+        lines[lineno - 1] = line[:start] + new + line[end:]
+
+    mapping = dict(module.renames)
+    return "\n".join(lines), mapping, def_renames
+
+
+def _is_constant(name: str) -> bool:
+    """A module-level CONSTANT_NAME, and nothing that merely shouts."""
+    return (name.isupper() and not name.startswith("__")
+            and any(ch.isalpha() for ch in name))
+
+
+def _name_pool(prefix: str, taken: set[str]):
+    """Short names, shortest first, skipping anything already spoken for."""
+    widths = 1
+    while True:
+        import itertools
+        for combo in itertools.product(_ALPHABET, repeat=widths):
+            candidate = prefix + "".join(combo)
+            if candidate in taken or candidate in _KEYWORDS:
+                continue
+            taken.add(candidate)
+            yield candidate
+        widths += 1
+
+
+_KEYWORDS = frozenset(keyword.kwlist) | frozenset(keyword.softkwlist)
 
 
 # --------------------------------------------------------------------------
@@ -320,7 +750,8 @@ def _pool_strings(source: str) -> str:
     out = rebuilt.split("\n")
     return "\n".join(out[:anchor] + bindings + out[anchor:])
 
-def minify(source: str, spaces_per_level: int = 1) -> str:
+def minify(source: str, spaces_per_level: int = 1,
+           rename: bool = True) -> tuple[str, dict]:
     header, _, rest = source.partition("\n")
     if not header.startswith("#"):
         raise SystemExit(
@@ -340,6 +771,14 @@ def minify(source: str, spaces_per_level: int = 1) -> str:
     stage = "\n".join(kept)
 
     stage = _strip_comments(stage)
+
+    # Renaming runs before pooling so the pool's collision check sees the
+    # short names that now exist, and after comment stripping so no rename
+    # has to reason about a comment that mentions the old name.
+    mapping: dict = {}
+    def_renames: dict = {}
+    if rename:
+        stage, mapping, def_renames = _rename_identifiers(stage)
 
     # Pooling runs here: after docstrings and comments are gone, so neither can
     # be pooled, and before the layout passes, whose line bookkeeping this
@@ -405,7 +844,7 @@ def minify(source: str, spaces_per_level: int = 1) -> str:
     # a second comment there makes the contract silently undeployable.
     if body and body[0].lstrip().startswith("#"):
         body = body[1:]
-    return header + "\n" + "\n".join(body) + "\n"
+    return header + "\n" + "\n".join(body) + "\n", mapping, def_renames
 
 
 def main() -> int:
@@ -413,10 +852,13 @@ def main() -> int:
     parser.add_argument("source", type=Path)
     parser.add_argument("-o", "--out", type=Path, required=True)
     parser.add_argument("--indent", type=int, default=1)
+    parser.add_argument("--no-rename", action="store_true",
+                        help="skip the identifier-renaming pass")
     args = parser.parse_args()
 
     source = args.source.read_text(encoding="utf8")
-    result = minify(source, args.indent)
+    result, mapping, def_renames = minify(source, args.indent,
+                                          rename=not args.no_rename)
 
     # Non-negotiable: the output must parse, and it must expose exactly the same
     # public surface. A minifier that quietly drops a method is worse than one
@@ -431,13 +873,28 @@ def main() -> int:
                 names.append(node.name)
         return sorted(names)
 
-    if surface(before) != surface(after):
-        missing = set(surface(before)) - set(surface(after))
-        extra = set(surface(after)) - set(surface(before))
+    # Renamed module-level functions are expected to differ; everything else
+    # must not. Public methods live on a class and are compared exactly.
+    renamed = dict(def_renames)
+    renamed.update(mapping)
+    expected = sorted(renamed.get(name, name) for name in surface(before))
+    if expected != surface(after):
+        missing = set(expected) - set(surface(after))
+        extra = set(surface(after)) - set(expected)
         raise SystemExit(f"public surface changed! missing={missing} extra={extra}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(result, encoding="utf8")
+    # The name map travels with the artifact. test_logic.py re-runs the whole
+    # suite against the minified file and needs to reach `_score` under
+    # whatever it is now called; without this the artifact would be a black
+    # box, and an untested artifact is the thing actually being deployed.
+    if mapping:
+        names_path = args.out.with_suffix(".names.json")
+        names_path.write_text(
+            json.dumps(mapping, indent=1, sort_keys=True) + "\n",
+            encoding="utf8")
+        print(f"{names_path}  {len(mapping)} renamed identifiers")
 
     src_bytes = len(source.encode("utf8"))
     out_bytes = len(result.encode("utf8"))

@@ -14,24 +14,51 @@ accept as collateral?*
 - Design: [`docs/DESIGN.md`](docs/DESIGN.md)
 - Measured source shapes: [`docs/PROBE.md`](docs/PROBE.md)
 - Deployments and checksums: [`deployments.json`](deployments.json)
+- **Milestone 1.1.0 changes: [below](#milestone-110)**
 
 ---
 
 ## Live
 
 **Web app: [tokenscope-two.vercel.app](https://tokenscope-two.vercel.app)** — scan a
-token, rate a whole wallet, keep an on-chain watchlist, browse the registry,
-compare two tokens, and re-verify any score on-chain. Runs against Bradbury;
-`frontend/` builds against either network.
+token, rate a pasted portfolio or a whole wallet, read a token's scoring
+history round by round, keep an on-chain watchlist, browse the registry,
+compare two tokens, and re-verify any score on-chain. Runs against the 1.1.0
+Studionet deployment; `frontend/` builds against either network.
 
-| | Studionet | Bradbury |
-|---|---|---|
-| **TokenScope** | `0xaC6B3575D82825533cA7E35fE8C57c9075b74E95` | `0xbAAF6f0151D728984445fc42edAC84e13241d4E6` |
-| **RiskConsumer** | `0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28` | `0x9DbdC862e5A35AC0126cd47d4B105E679A2Dd9ee` |
+| | rubric | Studionet | Bradbury |
+|---|---|---|---|
+| **TokenScope** | **1.1.0** | `0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88` | *see below* |
+| **TokenScope** | 1.0.0 | `0xaC6B3575D82825533cA7E35fE8C57c9075b74E95` | `0xbAAF6f0151D728984445fc42edAC84e13241d4E6` |
+| **RiskConsumer** | 1.1.0 | `0xcb9c1E7214B4e610c28A3E8242d9bc2b793A8193` | — |
+| **RiskConsumer** | 1.0.0 | `0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28` | `0x9DbdC862e5A35AC0126cd47d4B105E679A2Dd9ee` |
 
-Both networks run the **same artifact** — `shasum -a 256 build/TokenScope.min.py`
-→ `3706a8a2…`, 52,070 bytes. Verify any deployment with
+Verify any deployment with
 `genlayer code <address> | diff - build/TokenScope.min.py`.
+
+> ### ⚠︎ Bradbury will not accept a contract this size today
+>
+> **1.1.0 is not on Bradbury, and neither is anything else of this size.**
+> Bradbury now rejects any transaction whose gas limit exceeds **2²⁴ =
+> 16,777,216**, and deploy gas runs at ~810 gas per source byte — a ceiling of
+> **≈20,170 bytes of contract source**. The 1.1.0 artifact is 51,390.
+>
+> This is not the milestone's doing. **The 1.0.0 artifact currently live on
+> Bradbury cannot be redeployed today either** — that exact 52,070-byte file
+> was pulled from git and tried, byte for byte, and refused the same way.
+> Bisected and measured in [`docs/PROBE.md` §11](docs/PROBE.md). There is no
+> compression route around it: GenVM's ZIP runner layout permits `stored` only.
+>
+> The existing Bradbury deployment still **reads** perfectly — but only with
+> `genlayer` CLI **0.39.2**. Release `0.40.0-rc.3` (2026-09-03) ships the v0.6
+> calldata format and cannot call old-format contracts at all, failing with
+> `call to private method Contract.__handle_undefined_method__`. Pin the CLI:
+>
+> ```bash
+> npm install -g genlayer@0.39.2
+> genlayer network set testnet-bradbury
+> genlayer call 0xbAAF6f0151D728984445fc42edAC84e13241d4E6 get_stats   # works
+> ```
 
 Chains supported: **ethereum, base, arbitrum, polygon** — one Blockscout schema,
 four hosts. **Ethereum and Arbitrum are scoring today**; Base and Polygon are
@@ -78,54 +105,223 @@ genlayer call  <oracle> get_risk     --args 0xdAC17F958D2ee523a2206206994597C13D
 genlayer call  <oracle> verify_risk  --args 1
 ```
 
+## Milestone 1.1.0
+
+Three features on top of the accepted 1.0.0 project. Every one of them obeys
+the rules 1.0.0 set: consensus binds every stored value, the leader cannot
+forge one, validators compare the feature vector, no counter moves before a
+revert, and a refusal refunds.
+
+### 1 · Deeper rug detection — and a hole 1.0.0 documented but could not close
+
+Four new flags, all deterministic checks over explorer JSON. None of them asks
+the model anything.
+
+| flag | decided from | new ordinal |
+|---|---|---|
+| `HIDDEN_OWNER` | `eth_call owner()` via `/api/eth-rpc` | `hidden_owner`, `src_owner` |
+| `UNVERIFIED_SOURCE` | `is_verified` on the anchor | — (1.0.0's `UNVERIFIED`) |
+| `LOW_HOLDER_COUNT` | `holders_count`, line at 50 | `hold_lo` |
+| `CONCENTRATED_SUPPLY` | top holder share, line at 50% | — (1.0.0's `CONCENTRATED`, moved from 75%) |
+
+`HIDDEN_OWNER` is the one that matters. 1.0.0's *Honest limits* section said
+Blockscout exposes no way to read a contract's current owner, because
+`/smart-contracts/{a}/methods-read` is a 404 — so `renounced` was an inference
+from the ABI: *does an owner-shaped function exist at all*. **PEPE is what that
+inference cost.** PEPE has an `owner` function and has renounced ownership; the
+inference called it owned, which kept `MINTABLE` counting against a contract
+nobody can mint from.
+
+The original probe missed that the same explorer serves JSON-RPC one path
+segment up. One `POST` answers it exactly:
+
+```
+POST https://eth.blockscout.com/api/eth-rpc
+{"method":"eth_call","params":[{"to":"<token>","data":"0x8da5cb5b"},"latest"]}
+
+USDT  → 0x…c6cde7c39eb2f0f0095f41570af89efc2c1ea828   live owner
+PEPE  → 0x0000…0000                                    renounced, provably
+LINK  → error 3 "execution reverted"                   no owner()
+```
+
+Three response classes, kept apart on purpose — this is the part that could
+have broken consensus if done carelessly:
+
+| response | class | effect |
+|---|---|---|
+| an address, or a burn address | **answer** | sets the ordinal |
+| `execution reverted`, or `0x` | **answer** — the contract has no `owner()` | ABI rule stands |
+| 404 — host has no `/api/eth-rpc` | **missing document** | `src_owner=0`, verification rescales |
+| 5xx, or a throttle body, or unparseable | **transient** | the round fails, the fee is refunded |
+
+That last row is not defensive coding. Blockscout answers a rate limit with
+**HTTP 200** and a body carrying neither `result` nor `error`. Read as "no
+owner", it would put a node-dependent bit straight into the consensus vector —
+one validator gets an address, another gets throttled, and the round cannot
+converge.
+
+**Renaming rather than duplicating.** `UNVERIFIED_SOURCE` and
+`CONCENTRATED_SUPPLY` are 1.0.0's flags under the milestone's names. Adding a
+second flag that fires on exactly the condition `UNVERIFIED` already fired on
+would double-count in every aggregate that counts flags —
+`batch_scan.total_rug_flags` included. `CONCENTRATED_SUPPLY` also moved its
+line from 75% to the 50% its name claims; the rug **ladder** still keys its
+severe rungs off 75%, so loosening the flag did not loosen the verdict.
+
+**A live owner escalates in proportion to how unestablished the token is.**
+USDT's owner really can mint and really can freeze — but USDT is verified,
+eight years old, held by millions and not concentrated, so the live key stays a
+MEDIUM centralisation finding. On a two-day-old token with forty holders and
+80% in one wallet, the same key is the rug. A ladder that read "live owner +
+mint → HIGH" with no qualifier would paint `RUG_WARNING` on USDT and teach
+every user to ignore the badge.
+
+The flag also **costs points** — 10 of verification's total, available only
+when the probe resolved. Verification's availability is now 62, 72, 100 or 110
+instead of 62 or 100, rescaled the same way a missing ABI already was.
+
+### 2 · Rescan and risk history
+
+`rescan_token(token_id)` — same round, same fee, same cooldown as
+`request_risk`. Both funnel into one private `_scan`, and a test asserts
+`run_nondet_unsafe` appears exactly once in the source, so a re-scan cannot
+drift from a first scan.
+
+The `token_id` is the 1-based position in the append-only token list, issued on
+first sight and never reused. Naming a re-scan by an integer the contract
+issued matters here specifically: a mistyped address does not *fail*, it
+silently starts a **second feed**, and the refresh lands somewhere the user
+will never look.
+
+**The previous score travels on the record** — `prev_overall` and `prev_seq`,
+frozen at write time. History is a 12-slot ring buffer; once it laps, the
+record a delta was measured against is gone, and a delta recomputed from the
+surviving rows would quietly start answering a different question and would
+never look wrong. `prev_seq == 0` separates *no previous score* from *a delta
+of zero*, which are different claims and must not render as the same sentence.
+
+Reads: `get_risk_history(token_id)` for every stored round with its own frozen
+delta, `get_history_by_address(token, chain, count)` for callers holding only
+an address. New page: **`/history/[token]`**.
+
+### 3 · Portfolio scanner
+
+`batch_scan(addresses, chain)` — up to five tokens on one chain, riskiest
+first, with `portfolio_score` (weighted), `flagged_tokens`, `total_rug_flags`,
+`high_risk_tokens`, `worst_rug_level` and `coverage_pct`. New tab on
+**`/portfolio`**.
+
+#### `batch_scan` is a read, and that is the design
+
+It does **not** run five consensus rounds. Scoring one token is five HTTP
+documents, one or two JSON-RPC calls and one model call inside a single leader
+execution, repeated by every validator. Five tokens is thirty fetches in one
+round — and the **single**-token round for USDT0 on Arbitrum already came back
+`LEADER_TIMEOUT` several times before it settled, because that chain's
+`/holders` page takes ~7.5 s on its own. A five-token round would not be a
+bolder feature; it would be a round that never settles, and a round that never
+settles writes nothing. The portfolio would come back empty after five fees.
+
+So: `request_risk` and `rescan_token` buy consensus, one token per transaction;
+`batch_scan` reads what consensus already agreed and does the arithmetic across
+it, free and composable. `unscored` names the addresses still needing a round,
+which is what makes the portfolio page a loop rather than a guess.
+
+**Weighted by market-cap bucket**, because a pasted list of addresses carries
+no balances. Equal weighting would let a dust-sized token drag a portfolio's
+headline down as hard as its largest holding. `mcap` is already an agreed
+ordinal, so weighting by it costs nothing and cannot be forged — and
+`mean_score` sits beside it so the weighting is never the only number offered.
+
+### What changed for existing records
+
+The vector went from **29 ordinals to 32**. `_digest` prefixes the hash with
+the canonical length, so no 1.1.0 hash can collide with a 1.0.0 one — USDT's
+prefix moved `422 → 465`, which is the record saying out loud that it is a
+different kind of record. `rubric_version` is `1.1.0`.
+
+---
+
 ## Real output — USDT on Ethereum
 
-Verbatim from `get_risk`:
+Verbatim from `get_risk`, rubric 1.1.0:
 
 ```json
 { "symbol": "USDT", "name": "Tether", "chain": "ethereum",
-  "overall_score": 86, "confidence": "HIGH",
-  "distribution_score": 70, "activity_score": 100, "verification_score": 75,
+  "overall_score": 85, "confidence": "HIGH",
+  "distribution_score": 70, "activity_score": 100, "verification_score": 70,
   "maturity_score": 100, "liquidity_score": 95,
   "rug_level": "MEDIUM",
-  "rug_flags": ["MINTABLE", "PAUSABLE", "HAS_BLACKLIST"],
+  "rug_flags": ["MINTABLE", "PAUSABLE", "HAS_BLACKLIST", "HIDDEN_OWNER"],
   "badge": "MODERATE_RISK",
-  "content_hash": "422:d4c68f52cadab4c8",
-  "sources_ok": "address,contract,creation,holders,transfers" }
+  "content_hash": "465:96149d87575442e3",
+  "sources_ok": "address,contract,creation,holders,owner,transfers",
+  "token_id": 1, "has_previous": false, "risk_delta": 0 }
 ```
 
-`PEPE` on the same oracle scores **87** with a single flag, `HAS_BLACKLIST`, and
-`distribution_score: 80` — a very different shape from USDT's, from the same
-rubric.
+Those four rug flags are **correct and found by name**, not guessed: USDT's
+supply control really is `issue`, its freeze really is `pause` plus
+`addBlackList` / `destroyBlackFunds`, and `owner()` really does answer
+`0xc6cd…a828` rather than a burn address.
 
-Those three USDT rug flags are **correct and found by name**, not guessed: USDT's
-supply control really is `issue`, and its freeze really is `pause` plus
-`addBlackList` / `destroyBlackFunds`. A token can be mature, liquid, widely held
-and *still* be one owner call from worthless — which is why the badge is
-`MODERATE_RISK` and not `VERIFIED_SAFE` despite an 86.
+**What 1.1.0 changed here**, against the 1.0.0 record on the same token:
 
-The agreed feature vector behind that score (`get_evidence`):
+| | 1.0.0 | 1.1.0 |
+|---|---|---|
+| `verification_score` | 75 | **70** — a live owner costs 10 of the dimension's points |
+| `overall_score` | 86 | **85** |
+| `rug_flags` | 3 | **4** — `HIDDEN_OWNER` |
+| `sources_ok` | 5 documents | **6** — `owner` |
+| `content_hash` | `422:41a76eee24bba743` | `465:96149d87575442e3` |
+
+The hash prefix is the canonical vector length, so it moving `422 → 465` is
+the record saying out loud that it is a different kind of record. The
+rug level did **not** move: USDT is verified, eight years old, widely held and
+not concentrated, so the live owner key is a MEDIUM centralisation finding
+rather than a rug warning. That restraint is deliberate and is covered by a
+test.
+
+By contrast, **LINK** on the same oracle: `owner()` reverts — it has no owner
+function at all — so `sources_ok` still includes `owner`, `HIDDEN_OWNER` does
+not fire, and it scores **91** with `rug_level: NONE` and badge
+`VERIFIED_SAFE`.
+
+The agreed feature vector behind the USDT score (`get_evidence`):
 
 ```json
-{"age":5,"blacklist":1,"certified":0,"hold_ct":6,"license":0,"mcap":5,
- "methods":2,"mintable":1,"owner_risk":0,"pausable":1,"proxy_v":2,
- "renounced":0,"scam":0,"src_abi":1,"src_addr":1,"src_created":1,
- "src_holders":1,"src_transfers":1,"supply_d":2,"top1":4,"top10":3,
- "top1_ctr":0,"uniq":5,"upgradeable":0,"verified":1,"vol24":5,
- "xfer_ct":5,"xfer_rate":3,"xfer_rec":4}
+{"age":5,"blacklist":1,"certified":0,"hidden_owner":1,"hold_ct":6,
+ "hold_lo":0,"license":0,"mcap":5,"methods":2,"mintable":1,"owner_risk":0,
+ "pausable":1,"proxy_v":2,"renounced":0,"scam":0,"src_abi":1,"src_addr":1,
+ "src_created":1,"src_holders":1,"src_owner":1,"src_transfers":1,
+ "supply_d":2,"top1":4,"top10":3,"top1_ctr":0,"uniq":5,"upgradeable":0,
+ "verified":1,"vol24":5,"xfer_ct":5,"xfer_rate":3,"xfer_rec":4}
 ```
 
-29 small integers. That is the entire consensus surface.
+32 small integers. That is the entire consensus surface.
 
 ### Cross-network determinism — and what it does and does not claim
 
-Scoring USDT on **Bradbury** produced `content_hash 422:d4c68f52cadab4c8` and
-`overall 86` — byte-identical to the Studionet record written minutes earlier by
-a **different validator set**. The vector, not the network, decides the score.
+**1.1.0, across three independent deployments.** USDT scored through the
+1.1.0 artifact returned `content_hash 465:96149d87575442e3` and `overall 85`
+on Studionet deployment `0xcEC1EC8A…`, then again on `0x8F45d757…`, then again
+on `0x19063FE1…` — the build this repository ships. Three deployments, three
+validator sets, one fingerprint over 32 ordinals.
+
+Worth being precise about what that does and does not prove: those three
+builds differ from each other (the owner probe moved before the model call,
+`batch_scan`'s cap moved after de-duplication, the 4xx classification was
+corrected, and a second RPC host was added in front). **None of those changes
+touched an ordinal on a round that resolved**, and the identical hash is how
+that is checked rather than asserted.
+
+**1.0.0, across two networks.** Scoring USDT on **Bradbury** produced
+`content_hash 422:d4c68f52cadab4c8` and `overall 86` — byte-identical to the
+Studionet record written minutes earlier by a **different validator set**. The
+vector, not the network, decides the score.
 
 Re-scoring the same token on Bradbury an hour later produced a **different**
 hash, `422:41a76eee24bba743`, and the **same** `overall 86`. Diffing the two
-evidence vectors, exactly one of the 29 ordinals moved:
+evidence vectors, exactly one of 1.0.0's 29 ordinals moved:
 
 ```
 supply_d: 2  ->  3      # supply held outside the top 50 crossed the 40% rung
@@ -239,12 +435,38 @@ does not resolve:
 | maturity | 15% | contract age from the creation transaction's own timestamp |
 | liquidity | 20% | holder count, market cap, 24h volume, supply outside the top 50 |
 
-**Rug detection** — `mintable`, `pausable`, `has_blacklist`, `is_proxy`,
-`no_owner_surface`, plus Blockscout's own `is_scam`, laddered to
-`NONE / LOW / MEDIUM / HIGH / CRITICAL`.
+**Rug detection — eleven flags, every one a deterministic check over explorer
+JSON**, laddered to `NONE / LOW / MEDIUM / HIGH / CRITICAL`:
+
+| flag | decided from |
+|---|---|
+| `EXPLORER_SCAM_FLAG` | Blockscout's own `is_scam` |
+| `MINTABLE` | function names in the verified ABI |
+| `PAUSABLE` | function names in the verified ABI |
+| `HAS_BLACKLIST` | function names in the verified ABI |
+| `UPGRADEABLE_PROXY` | `proxy_type` / `implementations` on the anchor |
+| `HIDDEN_OWNER` | **`eth_call owner()`** via the explorer's JSON-RPC |
+| `UNVERIFIED_SOURCE` | `is_verified` on the anchor |
+| `LOW_HOLDER_COUNT` | `holders_count` on the anchor, line at 50 |
+| `VERY_NEW` | the creation transaction's own timestamp |
+| `CONCENTRATED_SUPPLY` | top holder share, line at 50% |
+| `OWNER_PRIVILEGED_METHODS` | the one model judgement — capped at MEDIUM |
+
+The UI explains each one: what it means, why it matters, and **which document
+it was read from**, so a reader can go and check it.
 
 **Risk history** — a fixed-capacity 12-slot ring buffer per token, with
-`get_risk_trend` → `IMPROVING / STABLE / DEGRADING / NEW`.
+`get_risk_trend` → `IMPROVING / STABLE / DEGRADING / NEW`,
+`get_risk_history(token_id)` for every stored round, and a `risk_delta` frozen
+onto each record at write time.
+
+**Rescan** — `rescan_token(token_id)` re-scores a known token by the integer
+the contract issued, rather than by an address a human retyped.
+
+**Portfolio scanner** — `batch_scan(addresses, chain)`: up to five tokens,
+sorted riskiest first, with the weighted portfolio score, flagged-token count
+and total rug flags computed on-chain. It is a **read** — see
+[below](#batch_scan-is-a-read-and-that-is-the-design).
 
 **Leaderboards** — `get_safest_tokens` and `get_riskiest_tokens`, per chain. Both
 read off one bounded array, and when it overflows entries are dropped **from the
@@ -274,13 +496,34 @@ DEX listing gate. See below.
 
 ## Honest limits
 
-- **`ownership_renounced` is not what it sounds like, and the contract says so.**
-  Blockscout exposes no way to read a contract's *current* owner — its
-  read-methods endpoint is a 404. So TokenScope does not claim to know that
-  ownership was renounced. It reports the checkable fact: whether the ABI has an
-  owner, admin, governance or authority function at all, surfaced as
-  `no_owner_surface`. That is weaker than reading `owner() == 0x0`, and it is
-  labelled as the weaker thing.
+- **~~`ownership_renounced` is not what it sounds like~~ — fixed in 1.1.0.**
+  1.0.0 said this, and it was true: Blockscout's read-methods endpoint is a
+  404, so the contract reported only whether the ABI had an owner-shaped
+  function at all. PEPE is what that cost — it *has* an `owner` function and
+  *has* renounced, and the inference called it owned. 1.1.0 reads `owner()`
+  over the explorer's own JSON-RPC at `/api/eth-rpc` and reports
+  `ownership_renounced` only when a burn address actually came back. When the
+  probe does not resolve, `owner_probe` is false and the old caveat is reported
+  **per record** instead of standing permanently.
+- **`owner()` is read at `latest`, which is not pinned across validators.** It
+  is collapsed to one bit that only moves when ownership actually transfers,
+  and `is_scam`, `is_verified` and `proxy_type` are already in the vector on
+  exactly these terms. A Blockscout *throttle* — HTTP 200 with neither `result`
+  nor `error` — is treated as transient and fails the round rather than
+  entering the vector as "no owner".
+- **`LOW_HOLDER_COUNT` needs the explorer to report a count.** A chain that
+  omits `holders_count` parses as 0, and "nobody holds it" and "nobody said"
+  are different claims, so an absent count leaves the flag off.
+- **The owner probe reads two hosts, and can still refuse.** Blockscout's
+  `/api/eth-rpc` is burst-limited and a consensus round is a burst: ten
+  concurrent requests drew nine 429s. So the probe leads with publicnode
+  (which took the same burst with ten 200s and covers all four chains) and
+  falls back to Blockscout. A second host is safe here because both read the
+  same chain and the answer is one bit — it changes the odds of getting an
+  answer, never the answer. If **both** refuse, the round refuses cleanly and
+  the fee is refunded; it does **not** quietly record "no owner", which is the
+  version of this that shipped first and that PEPE caught
+  (`docs/PROBE.md` §10).
 - **Keyword tables can miss a creatively-named function.** That is precisely why
   the residue goes to the model (below) rather than being assumed safe.
 - **A very large verified contract can exceed the 800 KB fetch cap.** Its ABI
@@ -426,7 +669,7 @@ Live, on the PEPE record above:
                   "badge": "MODERATE_RISK", "confidence": "HIGH" } }
 ```
 
-All thirteen checks pass: the record reproduces itself from its own 29 integers.
+All thirteen checks pass: the record reproduces itself from its own 32 integers.
 
 Governance cannot move a score. Weights, ladders and point tables are module
 constants, not storage. The owner sets the fee (0…0.1 GEN), pauses new scoring
@@ -449,7 +692,7 @@ once value is attached.
 
 ```bash
 python3 test/test_logic.py
-# 139 tests, 388 assert statements, 4,271 assertions executed
+# 291 tests, 624 assert statements, 6,936 assertions executed
 # stdlib only - no chain, no network, no model, no genlayer install
 ```
 
@@ -458,7 +701,12 @@ ordinal lattice: every feature key, over its entire declared range, asserting
 that no combination can produce an out-of-range dimension, a non-multiple of 5,
 or an unknown rug level.
 
-The suite checks four separate things:
+**151 of those tests are new in 1.1.0** — the four new flags and the owner
+probe's five response classes, `token_id` and the frozen delta, `rescan_token`,
+both history reads, `batch_scan`'s parsing, aggregates and ordering, and the
+minifier's renaming pass.
+
+The suite checks five separate things:
 
 1. **The pure logic** — ladders, rubric, rug ladder, badges, the consensus rule,
    address handling, and every extraction function run against the bodies the
@@ -474,12 +722,17 @@ The suite checks four separate things:
    minifier started pooling string literals, that parity check is doing real
    work: `test_scoring_is_identical_across_the_lattice` sweeps every feature key
    over its entire declared range through *both* files.
-4. **The watchlist, run rather than reasoned about.** It lives in class methods
-   over `TreeMap[str, Watchlist]` and `DynArray[WatchEntry]`, which no static
-   check can prove right, so the suite execs the whole contract against Python
-   stand-ins for the storage primitives and drives the real methods — add,
-   re-add, remove from the middle, fill to capacity, and the same battery again
-   through the artifact.
+4. **The watchlist, the portfolio and the history, run rather than reasoned
+   about.** They live in class methods over `TreeMap[str, Watchlist]` and
+   `DynArray[WatchEntry]`, which no static check can prove right, so the suite
+   execs the whole contract against Python stand-ins for the storage
+   primitives and drives the real methods — add, re-add, remove from the
+   middle, fill to capacity, rescan an unknown id, batch-scan a duplicate.
+5. **The minifier's renaming pass**, which is a rewrite of the deployable file
+   and so gets its own tests rather than riding on the behavioural suite: the
+   name map is injective, no public method or parameter or class or storage
+   field or attribute was touched, no string value changed, and two builds of
+   the same source are byte-identical.
 
 ### A bug the tests did not catch, and now do
 
@@ -553,10 +806,29 @@ bash tools/deploy_bradbury.sh
 ```
 
 The minifier strips comments, docstrings and blank lines, narrows indentation,
-and pools repeated string literals into short module-level names. It never
-renames an identifier, never reorders a statement, and never alters the *value*
-of any string — prompt templates included — then asserts the public surface is
-unchanged. Readable source stays in git; the artifact is what deploys.
+pools repeated string literals into short module-level names, and — new in
+1.1.0 — **renames identifiers**. It never reorders a statement and never alters
+the *value* of any string, prompt templates included, then asserts the public
+surface is unchanged. Readable source stays in git; the artifact is what
+deploys.
+
+The renaming pass is scope-resolved rather than textual: it builds Python's own
+scope tree, works out which scope owns each name, and rewrites only `ast.Name`,
+`ast.arg`, `except … as` bindings and the `def` identifiers it is already
+renaming. **Untouched:** every public method, every parameter of a
+`@gl.public.*` method (those are the ABI), every class, every storage field,
+every attribute, every dict key and every string. A nested function shares its
+parent's name pool, so a closure reading a free variable reads the same short
+name its parent wrote.
+
+That file used to say identifier renaming was refused. That was the right call
+while it would have been a regex over the text; it is the wrong call once the
+pass resolves names the way Python does. It shipped two bugs on the first
+attempt and the existing suite caught both before anything was deployed:
+`except X as e` binds a name that is not a `Name` node, and a nested `def`
+binds its own identifier in the enclosing scope. `59,532 → 51,390 bytes`, and
+`build/TokenScope.min.names.json` travels with the artifact so the tests can
+still reach `_score` under whatever it is now called.
 
 ### The deploy ceiling is real, and here is where it is
 
@@ -587,15 +859,41 @@ byte-identical to the hash the unpooled artifact produced on the previous
 deployment. `test/test_logic.py` budgets 53,000 bytes and fails the build above
 it.
 
+#### …and as of 2026-09-19 it moved, on Bradbury only
+
+The pubdata ceiling above is no longer the binding constraint on Bradbury. That
+chain now refuses any transaction whose **gas limit** exceeds `2²⁴ =
+16,777,216`, and deploy gas runs at ~809.5 gas per source byte plus ~240,000
+fixed — a ceiling of **≈20,170 bytes**. Bisected exactly:
+
+| tx gas limit | result | | source bytes | est. gas | result |
+|---|---|---|---|---|---|
+| 16,777,216 | deploys | | 20,000 | 16,640,019 | deploys |
+| 16,777,217 | `gas limit too high` | | 21,000 | 17,406,313 | refused |
+
+The block gas limit is 100,000,000, so it is a per-transaction cap. Studionet
+is unaffected — it prices deploys at a flat 500,000 gas and took the 51,390-byte
+1.1.0 artifact without complaint. Full method and figures in
+[`docs/PROBE.md` §11](docs/PROBE.md).
+
+This is a network change, not a milestone regression: **the 52,070-byte 1.0.0
+artifact that is live on Bradbury right now cannot be redeployed today either**,
+and that was confirmed by pulling it from git and trying it byte for byte.
+
 ## Method surface
 
-**Write** — `request_risk(token, chain)` payable · `add_to_watchlist(token,
-chain)` · `remove_from_watchlist(token, chain)` · `claim_refund()` ·
-`clear_stale_pending(token, chain)` · owner-only: `set_fee`, `set_paused`,
-`transfer_ownership`, `withdraw`
+**Write** — `request_risk(token, chain)` payable · **`rescan_token(token_id)`
+payable** · `add_to_watchlist(token, chain)` · `remove_from_watchlist(token,
+chain)` · `claim_refund()` · `clear_stale_pending(token, chain)` · owner-only:
+`set_fee`, `set_paused`, `transfer_ownership`, `withdraw`
 
-**Read** — `get_risk` · `get_risk_by_id` · `get_risk_history` · `get_risk_trend`
-· `get_badge` · `is_safe` · `require_safe` · `check_rug_pull` · `compare_tokens`
+**Read** — `get_risk` · `get_risk_by_id` · **`get_risk_history(token_id)`** ·
+**`get_history_by_address`** · **`batch_scan`** · `get_risk_trend` ·
+`get_badge` · `is_safe` · `require_safe` · `check_rug_pull` · `compare_tokens`
 · `get_safest_tokens` · `get_riskiest_tokens` · `verify_risk` · `get_evidence` ·
 `get_stats` · `get_config` · `get_refund` · `get_tracked_tokens` ·
 `get_governance_log` · `get_watchlist`
+
+Bold entries are new in 1.1.0. `get_risk_history` **changed signature** — it
+now takes the `token_id` that `rescan_token` takes, and the old
+address-addressed form is `get_history_by_address(token, chain, count)`.

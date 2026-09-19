@@ -15,7 +15,7 @@ export function Footer() {
             </Link>
             <p className="mt-3 text-sm leading-relaxed text-ink-500">
               On-chain, multi-chain ERC-20 risk assessment. Validators agree on a
-              feature vector of 29 bucketed ordinals — never on a score — so every
+              feature vector of 32 bucketed ordinals — never on a score — so every
               number is reproducible arithmetic that anyone can re-check.
             </p>
           </div>

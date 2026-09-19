@@ -45,9 +45,21 @@ const READS: Method[] = [
   },
   {
     name: "get_risk_history",
+    args: "token_id: int",
+    returns: "{scores: record[], best_overall, worst_overall, capacity, window_delta, …}",
+    blurb: "Up to 12 stored scores, newest first, addressed by the token_id rescan_token takes.",
+  },
+  {
+    name: "get_history_by_address",
     args: "token_address: str, chain: str, count: int",
     returns: "{scores: record[], best_overall, worst_overall, capacity, …}",
-    blurb: "Up to 12 stored scores, newest first, with the best and worst across the window.",
+    blurb: "The same history for a caller that only has an address.",
+  },
+  {
+    name: "batch_scan",
+    args: "addresses: list | str, chain: str",
+    returns: "{portfolio_score, flagged_tokens, total_rug_flags, tokens: row[], unscored, …}",
+    blurb: "Up to 5 tokens, riskiest first, aggregated on-chain. A read: it scores nothing.",
   },
   {
     name: "get_risk_trend",
@@ -111,7 +123,7 @@ const READS: Method[] = [
   {
     name: "get_evidence",
     args: "score_id: int",
-    returns: "{evidence: {…29 ordinals}, ranges, content_hash, sources_ok}",
+    returns: "{evidence: {…32 ordinals}, ranges, content_hash, sources_ok}",
     blurb: "The feature vector validators actually agreed on. Every score is arithmetic over this.",
   },
   {
@@ -161,6 +173,13 @@ const WRITES: Method[] = [
     returns: "{status: 'OK' | 'REJECTED', …}",
     blurb:
       "Runs a consensus round. Never raises once value is attached: a refusal returns REJECTED with the fee credited, because a payable call that reverts keeps the deposit with no record to refund it from.",
+  },
+  {
+    name: "rescan_token",
+    args: "token_id: int — payable",
+    returns: "{status: 'OK' | 'REJECTED', risk_delta, previous_overall, …}",
+    blurb:
+      "The same round as request_risk, naming the token by the integer the contract issued rather than by a retyped address. Freezes the score it replaced onto the new record, so the delta stays true after the ring buffer laps.",
   },
   {
     name: "add_to_watchlist",
@@ -598,7 +617,7 @@ export default function ApiDocsPage() {
               <CodeBlock
                 code={SHAPE_RISK}
                 language="json"
-                caption="content_hash is the fingerprint of the agreed feature vector: 422 is the sum of the 29 ordinals and the hex is their digest. Two nodes producing the same hash produced the same evidence, which is what verify_risk re-checks."
+                caption="content_hash is the fingerprint of the agreed feature vector: the prefix is the length of the canonical vector and the hex is its digest — which is why 1.0.0's 29-ordinal records start 422 and 1.1.0's 32-ordinal records start 465, and why the two can never collide. Two nodes producing the same hash produced the same evidence, which is what verify_risk re-checks."
               />
 
               <h3 className="mt-8 text-sm font-semibold text-ink-900">
@@ -652,11 +671,15 @@ export default function ApiDocsPage() {
                   },
                   {
                     t: "History depth",
-                    d: "The last 12 scores per token, in a ring. Older ones are overwritten, and get_risk_history tells you the capacity so you never have to assume it.",
+                    d: "The last 12 scores per token, in a ring. Older ones are overwritten, and get_risk_history tells you the capacity so you never have to assume it. Each record carries the score it replaced, frozen at write time — so a delta stays true after the ring has lapped past the record it was measured against.",
                   },
                   {
                     t: "Registry ceiling",
                     d: "2,000 tokens. Leaderboards are bounded at 40 per chain and drop from the middle on overflow, so both tails survive.",
+                  },
+                  {
+                    t: "Portfolio size",
+                    d: "batch_scan takes at most 5 addresses per call, and it is a READ: scoring five tokens in one consensus round would be thirty fetches in a single leader execution, and single-token rounds on Arbitrum already time out. It reads what consensus agreed and names the rest in `unscored`.",
                   },
                   {
                     t: "RPC rate limits",

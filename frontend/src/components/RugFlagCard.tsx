@@ -5,7 +5,13 @@ import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { flagMeta } from "@/lib/risk";
 
 /**
- * One rug finding, as a warning card.
+ * One rug finding, as a warning card: what it is, why it matters, and the
+ * document it was read from.
+ *
+ * The third line is the one that makes the card worth reading twice. Every
+ * flag here is a deterministic check over public explorer JSON, so naming the
+ * source turns "trust us" into "go and look" — and it is also the honest way
+ * to mark the one flag that is a model judgement rather than a lookup.
  *
  * The shake is deliberately small and runs once. A warning that jitters
  * repeatedly gets tuned out, which is the opposite of what a warning is for.
@@ -31,9 +37,14 @@ export function RugFlagCard({ flag, index = 0 }: { flag: string; index?: number 
       <div className="min-w-0">
         <p className="text-sm font-semibold text-danger-700">{meta.title}</p>
         <p className="mt-1 text-xs leading-relaxed text-danger-700/80">{meta.detail}</p>
-        <code className="mt-2 inline-block rounded bg-danger-500/10 px-1.5 py-0.5 font-mono text-[11px] text-danger-700">
-          {flag}
-        </code>
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <code className="inline-block rounded bg-danger-500/10 px-1.5 py-0.5 font-mono text-[11px] text-danger-700">
+            {flag}
+          </code>
+          <span className="text-[11px] text-danger-700/70">
+            read from <span className="font-medium">{meta.source}</span>
+          </span>
+        </div>
       </div>
     </motion.div>
   );
@@ -52,8 +63,9 @@ export function NoFlagsCard() {
       <div>
         <p className="text-sm font-semibold text-safe-700">No rug findings</p>
         <p className="mt-1 text-xs leading-relaxed text-safe-700/80">
-          No mint, pause, blacklist or proxy surface was found in the verified ABI, the
-          explorer has not flagged it, and the supply is not concentrated.
+          No mint, pause, blacklist or proxy surface in the verified ABI, no
+          live owner key, the explorer has not flagged it, the supply is not
+          concentrated in one wallet and it is not thinly held.
         </p>
       </div>
     </motion.div>

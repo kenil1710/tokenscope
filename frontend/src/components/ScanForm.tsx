@@ -37,9 +37,21 @@ const PROGRESS_STEPS = [
   "Writing the agreed score to storage",
 ];
 
-export function ScanForm({ initialChain = "ethereum" }: { initialChain?: ChainName }) {
+export function ScanForm({
+  initialChain = "ethereum",
+  initialToken = "",
+}: {
+  initialChain?: ChainName;
+  /**
+   * Pre-fills the address box. The portfolio's "scan it" links carry the
+   * address they were about, and a link that quietly dropped it would send
+   * the user back to an empty form having thrown away the one thing they
+   * had.
+   */
+  initialToken?: string;
+}) {
   const { account, chainOk } = useWallet();
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialToken);
   const [chain, setChain] = useState<ChainName>(initialChain);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [step, setStep] = useState(0);

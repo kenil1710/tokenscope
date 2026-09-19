@@ -252,6 +252,29 @@ def _install_stub() -> None:
     sys.modules["genlayer"] = mod
 
 
+def _alias(module: types.ModuleType, path: Path) -> None:
+    """Make the artifact's renamed internals reachable under their real names.
+
+    The minifier renames every module-level private - `_score` ships as `_aB` -
+    and writes the map beside the artifact. Without it the deployable file
+    would be a black box that no test could reach into, and the artifact is
+    the thing that actually gets deployed. Reading `A._score` is enough for
+    almost everything here; a test that REPLACES a global has to go through
+    `real()` below, because rebinding the alias would not change what the
+    renamed callers look up."""
+    names = path.with_suffix(".names.json")
+    mapping = json.loads(names.read_text(encoding="utf8")) if names.exists() else {}
+    module.__namemap__ = mapping
+    for original, short in mapping.items():
+        if short in module.__dict__ and original not in module.__dict__:
+            module.__dict__[original] = module.__dict__[short]
+
+
+def real(module: types.ModuleType, name: str) -> str:
+    """The name `name` actually has inside `module`."""
+    return getattr(module, "__namemap__", {}).get(name, name)
+
+
 def load(path: Path, name: str) -> types.ModuleType:
     """Exec the contract's pure region - every top-level statement before the
     first class definition. That region touches `gl` only for
@@ -266,6 +289,7 @@ def load(path: Path, name: str) -> types.ModuleType:
     module = types.ModuleType(name)
     module.__file__ = str(path)
     exec(compile(tree, str(path), "exec"), module.__dict__)
+    _alias(module, path)
     return module
 
 
@@ -277,6 +301,7 @@ def load_full(path: Path, name: str) -> types.ModuleType:
     module.__file__ = str(path)
     exec(compile(path.read_text(encoding="utf8"), str(path), "exec"),
          module.__dict__)
+    _alias(module, path)
     return module
 
 
@@ -735,7 +760,7 @@ class TestIdentity(unittest.TestCase):
                 M._norm_chain(bad)
 
     def test_every_chain_has_a_base_and_an_explorer_url(self):
-        for name, base in M.CHAINS:
+        for name, base, _rpc in M.CHAINS:
             self.assertTrue(base.startswith("https://"))
             self.assertTrue(base.endswith("/api/v2/"))
             self.assertEqual(M._chain_base(name), base)
@@ -1279,11 +1304,29 @@ class TestRugDetection(unittest.TestCase):
         self.assertNotEqual(M._score(f)["rug_level"], "HIGH")
 
     def test_low_is_for_flags_that_reach_no_higher_rung(self):
+        """LOW is the rung for a flag that nothing in the ladder escalates.
+
+        CONCENTRATED_SUPPLY used to be that flag and no longer is: 1.1.0 moved
+        it to the >50% line and gave it its own MEDIUM rung, because one wallet
+        holding the majority IS the mechanism, not a footnote to it. VERY_NEW
+        on an otherwise clean, verified, well-distributed token is what is left
+        - worth saying, not worth escalating."""
+        f = feats(src_addr=1, src_created=1, src_holders=1, verified=2,
+                  age=0, top1=6, top10=5)
+        s = M._score(f)
+        self.assertEqual(s["rug_flags"], ["VERY_NEW"])
+        self.assertEqual(s["rug_level"], "LOW")
+
+    def test_a_majority_holder_is_medium_on_its_own(self):
+        """The 1.0.0 threshold was 75%; the milestone's is 50%."""
         f = feats(src_addr=1, src_created=1, src_holders=1, verified=2,
                   age=5, top1=1)
         s = M._score(f)
-        self.assertEqual(s["rug_flags"], ["CONCENTRATED"])
-        self.assertEqual(s["rug_level"], "LOW")
+        self.assertEqual(s["rug_flags"], ["CONCENTRATED_SUPPLY"])
+        self.assertEqual(s["rug_level"], "MEDIUM")
+        # rung 3 is "top holder at or below 50%", which is not the flag.
+        f["top1"] = 3
+        self.assertEqual(M._score(f)["rug_flags"], [])
 
     def test_rug_level_is_a_pure_function_of_the_vector(self):
         for key, hi in M.FEATURE_RANGE:
@@ -1560,18 +1603,21 @@ class TestDeployableArtifact(unittest.TestCase):
         def not_found(_u, _c):
             raise _UserError(M.ERR_EXTERNAL + " http 404")
         for mod in (M, self.A):
-            original = mod._get_json
-            mod._get_json = not_found
+            # `_try_json` looks its dependency up by whatever name the
+            # minifier gave it, so the patch has to land on that name.
+            slot = real(mod, "_get_json")
+            original = getattr(mod, slot)
+            setattr(mod, slot, not_found)
             try:
                 self.assertIsNone(mod._try_json("https://x.test/y", 10))
             finally:
-                mod._get_json = original
-            mod._get_json = broken
+                setattr(mod, slot, original)
+            setattr(mod, slot, broken)
             try:
                 with self.assertRaises(_UserError):
                     mod._try_json("https://x.test/y", 10)
             finally:
-                mod._get_json = original
+                setattr(mod, slot, original)
 
     def test_consensus_functions_are_identical(self):
         p = payload()
@@ -1629,24 +1675,36 @@ class _Chain:
         self.mod = module
         self.gl = module.gl
         self.gl.message.sender_address = _Address(WALLET_A)
+        self.gl.message.value = 0
         self.c = module.TokenScope()
+        self._next_id = 0
 
     def sender(self, address):
         self.gl.message.sender_address = _Address(address)
 
     def score(self, token, chain, overall, *, seq=1, symbol="TKN",
-              rug="LOW", badge="VERIFIED_SAFE", flags=""):
+              rug="LOW", badge="VERIFIED_SAFE", flags="", evidence=None):
         """Write a record straight into storage. The scoring path itself is
-        covered by the rest of this file; what the watchlist needs is a feed
-        that looks the way a settled round leaves one."""
+        covered by the rest of this file; what the watchlist and the portfolio
+        need is a feed that looks the way a settled round leaves one -
+        including the token-id registration, because `token_id` and
+        `get_tracked_tokens` read the append-only list, not the feed map."""
         key = self.mod._key(chain, token)
         feed = self.c.feeds.get_or_insert_default(key)
         feed.token = token
         feed.chain = chain
         feed.symbol = symbol
         feed.capacity = 12
+        if key not in self.c.token_seen:
+            self.c.tokens.append(key)
+            self.c.token_seen[key] = True
+            self.c.token_ids[key] = len(self.c.tokens)
         rec = feed.history.append_new_get()
-        rec.score_id = len(self.c.feeds)
+        self._next_id += 1
+        rec.score_id = self._next_id
+        rec.evidence = json.dumps(evidence if evidence is not None
+                                  else blank(self.mod), sort_keys=True,
+                                  separators=(",", ":"))
         rec.token = token
         rec.chain = chain
         rec.symbol = symbol
@@ -1661,6 +1719,7 @@ class _Chain:
         rec.seq = seq
         feed.cursor = len(feed.history) % 12
         feed.update_count = seq
+        self.c.id_index[str(int(rec.score_id))] = key + "|" + str(seq)
         return rec
 
     def rescore(self, token, chain, overall, *, seq=2):
@@ -1672,6 +1731,7 @@ class _Chain:
 WALLET_A = "0x1111111111111111111111111111111111111111"
 WALLET_B = "0x2222222222222222222222222222222222222222"
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+LINK = "0x514910771af9ca656af840dff83e8264ecf986ca"
 
 
 class TestWatchlist(unittest.TestCase):
@@ -2000,6 +2060,1384 @@ class TestConsumerArtifact(unittest.TestCase):
             self.assertLessEqual(len(CONSUMER_ARTIFACT.read_bytes()),
                                  SIZE_BUDGET)
             self.assertEqual(undefined_names(CONSUMER_ARTIFACT), [])
+
+
+# --------------------------------------------------------------------------
+# MILESTONE 1.1.0 - feature 1: deeper rug detection
+#
+# Four new flags, and every one of them is a pure function of ordinals the
+# validators agreed on. These tests are written against `_score`, not against
+# a leader's output, because that is the point: a flag nobody can assert is a
+# flag nobody can forge.
+# --------------------------------------------------------------------------
+
+
+class TestHiddenOwner(unittest.TestCase):
+    """HIDDEN_OWNER - owner() answers a live address."""
+
+    def test_the_flag_follows_the_ordinal(self):
+        f = feats(src_addr=1, src_owner=1, verified=2, hidden_owner=1)
+        self.assertIn("HIDDEN_OWNER", M._score(f)["rug_flags"])
+        f["hidden_owner"] = 0
+        self.assertNotIn("HIDDEN_OWNER", M._score(f)["rug_flags"])
+
+    def test_it_is_bound_by_the_content_hash(self):
+        """A leader that flipped this bit would produce a different digest,
+        so it cannot be asserted without every validator agreeing."""
+        a = healthy()
+        b = dict(a)
+        b["hidden_owner"] = 1
+        self.assertNotEqual(M._digest("ethereum", USDT, "USDT", a),
+                            M._digest("ethereum", USDT, "USDT", b))
+
+    def test_it_is_in_the_feature_range_with_a_ceiling_of_one(self):
+        self.assertIn(("hidden_owner", 1), M.FEATURE_RANGE)
+        self.assertIn(("src_owner", 1), M.FEATURE_RANGE)
+
+    def test_a_live_owner_costs_verification_points(self):
+        clean = feats(src_addr=1, src_abi=1, src_owner=1, verified=2,
+                      proxy_v=2, methods=3, license=1, certified=1)
+        owned = dict(clean)
+        owned["hidden_owner"] = 1
+        self.assertGreater(M._score(clean)["verification"],
+                           M._score(owned)["verification"])
+
+    def test_an_unresolved_probe_rescales_rather_than_scoring_zero(self):
+        """src_owner 0 must not be read as 'the owner is fine' OR as a
+        penalty. It drops the term from both sides of the fraction."""
+        without = feats(src_addr=1, src_abi=1, verified=2, proxy_v=2,
+                        methods=3, license=1, certified=1)
+        withprobe = dict(without)
+        withprobe["src_owner"] = 1
+        self.assertEqual(M._dim_verification(without)[1], 100)
+        self.assertEqual(M._dim_verification(withprobe)[1], 110)
+        # A renounced owner scores the same fraction as no probe at all.
+        self.assertEqual(M._score(without)["verification"],
+                         M._score(withprobe)["verification"])
+
+    def test_availability_takes_exactly_four_values(self):
+        seen = set()
+        for abi in (0, 1):
+            for owner in (0, 1):
+                f = feats(src_addr=1, src_abi=abi, src_owner=owner)
+                seen.add(M._dim_verification(f)[1])
+        self.assertEqual(seen, {62, 72, 100, 110})
+
+    def test_a_live_owner_alone_is_not_a_rug(self):
+        """An owner key with nothing dangerous to call is worth SAYING and
+        not worth escalating: the flag is raised, the rung stays LOW. What
+        makes an owner dangerous is the mint, pause or blacklist beside it."""
+        f = healthy()
+        f["src_owner"] = 1
+        f["hidden_owner"] = 1
+        s = M._score(f)
+        self.assertEqual(s["rug_flags"], ["HIDDEN_OWNER"])
+        self.assertEqual(s["rug_level"], "LOW")
+
+    def test_a_live_owner_beside_a_pause_is_medium(self):
+        """USDT is this case: verified, old, widely held, and still one
+        owner call from frozen."""
+        f = healthy()
+        f["src_owner"] = 1
+        f["hidden_owner"] = 1
+        f["pausable"] = 1
+        self.assertEqual(M._score(f)["rug_level"], "MEDIUM")
+
+    def test_a_live_owner_plus_mint_on_a_weak_token_is_high(self):
+        f = feats(src_addr=1, src_abi=1, src_owner=1, src_holders=1,
+                  src_created=1, verified=2, hidden_owner=1, mintable=1,
+                  top1=1, age=3)
+        self.assertEqual(M._score(f)["rug_level"], "HIGH")
+
+    def test_a_live_owner_plus_mint_on_a_strong_token_is_not_high(self):
+        f = healthy()
+        f["src_owner"] = 1
+        f["hidden_owner"] = 1
+        f["mintable"] = 1
+        f["renounced"] = 0
+        self.assertEqual(M._score(f)["rug_level"], "MEDIUM")
+
+    def test_the_critical_rung_needs_thin_and_concentrated_together(self):
+        f = feats(src_addr=1, src_abi=1, src_owner=1, src_holders=1,
+                  verified=2, hidden_owner=1, mintable=1, top1=0, hold_lo=1)
+        self.assertEqual(M._score(f)["rug_level"], "CRITICAL")
+        f["hold_lo"] = 0
+        self.assertEqual(M._score(f)["rug_level"], "HIGH")
+
+    def test_renouncing_still_disarms_mint(self):
+        f = feats(src_addr=1, src_abi=1, src_owner=1, src_holders=1,
+                  verified=2, mintable=1, top1=0, renounced=1)
+        self.assertNotEqual(M._score(f)["rug_level"], "CRITICAL")
+        self.assertNotIn("HIDDEN_OWNER", M._score(f)["rug_flags"])
+
+    def test_owner_is_reported_as_a_resolved_source(self):
+        f = feats(src_addr=1, src_owner=1)
+        self.assertIn("owner", M._sources(f).split(","))
+        f["src_owner"] = 0
+        self.assertNotIn("owner", M._sources(f).split(","))
+
+    def test_the_source_list_stays_in_a_fixed_order(self):
+        f = feats(src_addr=1, src_abi=1, src_created=1, src_holders=1,
+                  src_owner=1, src_transfers=1)
+        self.assertEqual(M._sources(f),
+                         "address,contract,creation,holders,owner,transfers")
+
+
+class TestOwnerProbe(unittest.TestCase):
+    """`_owner_features` - the eth_call that 1.0.0 did not know it could make.
+
+    Every branch is driven through a stubbed `gl.nondet.web.request`, because
+    the three failure CLASSES are the whole design: a revert is an answer, a
+    404 is a missing document, and a throttle is a transient that must never
+    reach the vector.
+    """
+
+    def setUp(self):
+        self.f = blank()
+        self.calls = []
+
+    def _respond(self, status, body):
+        def request(url, **kw):
+            self.calls.append((url, kw))
+            return types.SimpleNamespace(status=status, body=body)
+        return request
+
+    def _sequence(self, answers):
+        """One (status, body) per host, in the order the probe tries them."""
+        def request(url, **kw):
+            self.calls.append((url, kw))
+            status, body = answers[min(len(self.calls) - 1, len(answers) - 1)]
+            return types.SimpleNamespace(status=status, body=body)
+        return request
+
+    def _run(self, status, body, chain="ethereum",
+             base="https://eth.blockscout.com/api/v2/"):
+        """Both hosts answer the same way, which is the single-answer case."""
+        original = M.gl.nondet.web.request
+        M.gl.nondet.web.request = self._respond(status, body)
+        try:
+            M._owner_features(chain, base, USDT, self.f)
+        finally:
+            M.gl.nondet.web.request = original
+
+    def _run_seq(self, answers, chain="ethereum",
+                 base="https://eth.blockscout.com/api/v2/"):
+        original = M.gl.nondet.web.request
+        M.gl.nondet.web.request = self._sequence(answers)
+        try:
+            M._owner_features(chain, base, USDT, self.f)
+        finally:
+            M.gl.nondet.web.request = original
+
+    def test_the_rpc_url_is_derived_from_the_rest_base(self):
+        self.assertEqual(M._rpc_url("https://eth.blockscout.com/api/v2/"),
+                         "https://eth.blockscout.com/api/eth-rpc")
+        for _name, base, _rpc in M.CHAINS:
+            self.assertTrue(M._rpc_url(base).endswith("/api/eth-rpc"), base)
+
+    def test_every_chain_has_a_dedicated_rpc_host(self):
+        for name, _base, rpc in M.CHAINS:
+            self.assertTrue(rpc.startswith("https://"), name)
+            self.assertEqual(M._chain_rpc(name), rpc)
+        self.assertEqual(M._chain_rpc("nope"), "")
+
+    def test_the_dedicated_host_is_tried_first(self):
+        """publicnode leads because it survives a burst; Blockscout's own
+        JSON-RPC backs it up. Order is fixed, so every node tries the same
+        host first and a round cannot split on which one answered."""
+        self._run(200, '{"result":"0x' + "0" * 64 + '"}')
+        self.assertEqual(self.calls[0][0], M._chain_rpc("ethereum"))
+
+    def test_the_second_host_is_tried_when_the_first_refuses(self):
+        """THE reason the fallback exists. A 429 from one host must not fail
+        a round the other host can settle - and it cannot change the answer,
+        because both read the same chain and the answer is one bit."""
+        self._run_seq([(429, "rate limited"),
+                       (200, '{"result":"0x' + "0" * 24 + "a" * 40 + '"}')])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[1][0],
+                         "https://eth.blockscout.com/api/eth-rpc")
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["hidden_owner"], 1)
+
+    def test_the_second_host_is_tried_when_the_first_has_no_endpoint(self):
+        self._run_seq([(404, "nope"),
+                       (200, '{"result":"0x' + "0" * 64 + '"}')])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["renounced"], 1)
+
+    def test_the_first_host_settling_does_not_call_the_second(self):
+        self._run_seq([(200, '{"result":"0x' + "0" * 64 + '"}'),
+                       (500, "should never be reached")])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_a_refusal_outranks_a_missing_endpoint(self):
+        """One host throttles, the other says 404. Another node may have got
+        an answer from the throttled one, so the round must fail rather than
+        record a missing source it cannot vouch for."""
+        with self.assertRaises(_UserError) as caught:
+            self._run_seq([(429, "rate limited"), (404, "nope")])
+        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertEqual(self.f["src_owner"], 0)
+
+    def test_both_hosts_missing_is_a_missing_document(self):
+        self._run_seq([(404, "nope"), (404, "nope")])
+        self.assertEqual(self.f["src_owner"], 0)
+        self.assertEqual(self.f["hidden_owner"], 0)
+
+    def test_a_live_owner_sets_the_flag_and_clears_renounced(self):
+        self.f["renounced"] = 1
+        self._run(200, '{"jsonrpc":"2.0","id":1,"result":"0x000000000000'
+                       '000000000000c6cde7c39eb2f0f0095f41570af89efc2c1ea828"}')
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["hidden_owner"], 1)
+        self.assertEqual(self.f["renounced"], 0)
+
+    def test_a_zero_owner_proves_renouncement(self):
+        self._run(200, '{"jsonrpc":"2.0","id":1,"result":"0x' + "0" * 64 + '"}')
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["hidden_owner"], 0)
+        self.assertEqual(self.f["renounced"], 1)
+
+    def test_every_burn_address_counts_as_renounced(self):
+        for burn in M.BURN_ADDRESSES:
+            self.f = blank()
+            word = "0x" + burn[2:].rjust(64, "0")
+            self._run(200, '{"result":"' + word + '"}')
+            self.assertEqual(self.f["hidden_owner"], 0, burn)
+            self.assertEqual(self.f["renounced"], 1, burn)
+
+    def test_a_revert_is_an_answer_not_a_failure(self):
+        """LINK and SHIB have no owner(). The ABI rule stands, untouched."""
+        self.f["renounced"] = 1
+        self._run(200, '{"jsonrpc":"2.0","id":1,"error":{"code":3,'
+                       '"message":"execution reverted"}}')
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["hidden_owner"], 0)
+        self.assertEqual(self.f["renounced"], 1)
+
+    def test_a_revert_does_not_invent_renouncement(self):
+        """A contract with admin() but no owner() reverts here. It must NOT
+        come back renounced - only a burn address proves that."""
+        self.f["renounced"] = 0
+        self._run(200, '{"error":{"message":"execution reverted"}}')
+        self.assertEqual(self.f["renounced"], 0)
+
+    def test_a_throttle_is_transient(self):
+        """Blockscout answers a rate limit with HTTP 200 and a body carrying
+        neither result nor error. Read as 'no owner' it would put a
+        node-dependent bit straight into the consensus vector."""
+        with self.assertRaises(_UserError) as caught:
+            self._run(200, '{"message":"Too many requests.","result":null,'
+                           '"status":"0"}')
+        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertEqual(self.f["src_owner"], 0)
+
+    def test_a_non_revert_error_is_transient(self):
+        with self.assertRaises(_UserError) as caught:
+            self._run(200, '{"error":{"code":-32005,"message":"limit exceeded"}}')
+        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertEqual(self.f["src_owner"], 0)
+
+    def test_a_5xx_is_transient(self):
+        with self.assertRaises(_UserError) as caught:
+            self._run(503, "upstream down")
+        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+
+    def test_unparseable_json_is_transient(self):
+        with self.assertRaises(_UserError) as caught:
+            self._run(200, "<html>gateway</html>")
+        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+
+    def test_a_json_array_is_transient(self):
+        with self.assertRaises(_UserError) as caught:
+            self._run(200, "[1,2,3]")
+        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+
+    def test_a_throttle_status_is_transient_not_a_missing_endpoint(self):
+        """The bug this replaced: every 4xx was read as "this host has no
+        /api/eth-rpc". A 429 is not that. It is one node being refused while
+        another gets an address, which is a node-dependent bit reaching the
+        consensus vector - and it really happened, on PEPE."""
+        for status in M.RPC_TRANSIENT_STATUS:
+            self.f = blank()
+            with self.assertRaises(_UserError) as caught:
+                self._run(status, "rate limited")
+            self.assertTrue(
+                caught.exception.message.startswith(M.ERR_TRANSIENT), status)
+            self.assertEqual(self.f["src_owner"], 0, status)
+
+    def test_429_specifically_is_transient(self):
+        with self.assertRaises(_UserError):
+            self._run(429, '{"message":"Too many requests"}')
+
+    def test_a_deterministic_4xx_is_a_missing_document(self):
+        """400 and 404 mean the same thing to every node - every one of them
+        POSTs identical bytes to the same URL - so they rescale rather than
+        failing the round."""
+        for status in (400, 404, 405):
+            self.f = blank()
+            self._run(status, "nope")
+            self.assertEqual(self.f["src_owner"], 0, status)
+            self.assertEqual(self.f["hidden_owner"], 0, status)
+
+    def test_a_404_is_a_missing_document_not_a_failure(self):
+        """A host without /api/eth-rpc is deterministic for every node, so it
+        degrades the same way a missing ABI does."""
+        self._run(404, "Page not found")
+        self.assertEqual(self.f["src_owner"], 0)
+        self.assertEqual(self.f["hidden_owner"], 0)
+
+    def test_an_empty_return_is_read_as_no_owner(self):
+        self._run(200, '{"result":"0x"}')
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["hidden_owner"], 0)
+
+    def test_a_non_string_result_is_transient(self):
+        with self.assertRaises(_UserError):
+            self._run(200, '{"result":null}')
+
+    def test_a_non_hex_result_is_transient(self):
+        with self.assertRaises(_UserError):
+            self._run(200, '{"result":"0x' + "z" * 64 + '"}')
+
+    def test_the_request_is_a_post_with_an_eth_call_body(self):
+        self._run(200, '{"result":"0x' + "0" * 64 + '"}')
+        url, kw = self.calls[0]
+        self.assertEqual(url, "https://ethereum-rpc.publicnode.com")
+        self.assertEqual(kw["method"], "POST")
+        sent = json.loads(kw["body"])
+        self.assertEqual(sent["method"], "eth_call")
+        self.assertEqual(sent["params"][0]["data"], M.OWNER_SELECTOR)
+        self.assertEqual(sent["params"][0]["to"], USDT)
+        self.assertEqual(sent["params"][1], "latest")
+
+    def test_the_selector_is_the_ownable_one(self):
+        self.assertEqual(M.OWNER_SELECTOR, "0x8da5cb5b")
+
+    def test_the_address_is_taken_from_the_low_word(self):
+        """An eth_call returns a padded 32-byte word; the address is its last
+        twenty bytes, and reading the wrong end would flag every token."""
+        self._run(200, '{"result":"0x' + "0" * 24 + "a" * 40 + '"}')
+        self.assertEqual(self.f["hidden_owner"], 1)
+
+    def test_a_result_without_the_0x_prefix_still_parses(self):
+        self._run(200, '{"result":"' + "0" * 24 + "b" * 40 + '"}')
+        self.assertEqual(self.f["src_owner"], 1)
+        self.assertEqual(self.f["hidden_owner"], 1)
+
+
+class TestLowHolderCount(unittest.TestCase):
+    """LOW_HOLDER_COUNT - fewer than 50 holders on the anchor document."""
+
+    def test_the_line_is_fifty(self):
+        self.assertEqual(M.LOW_HOLDER_LINE, 50)
+
+    def test_the_flag_follows_the_ordinal(self):
+        f = feats(src_addr=1, verified=2, hold_lo=1)
+        self.assertIn("LOW_HOLDER_COUNT", M._score(f)["rug_flags"])
+        f["hold_lo"] = 0
+        self.assertNotIn("LOW_HOLDER_COUNT", M._score(f)["rug_flags"])
+
+    def test_extraction_below_the_line(self):
+        for count in (1, 7, 49):
+            f = blank()
+            doc = json.loads(json.dumps(ANCHOR))
+            doc["token"]["holders_count"] = str(count)
+            M._anchor_features(doc, f)
+            self.assertEqual(f["hold_lo"], 1, count)
+
+    def test_extraction_at_and_above_the_line(self):
+        for count in (50, 51, 17542142):
+            f = blank()
+            doc = json.loads(json.dumps(ANCHOR))
+            doc["token"]["holders_count"] = str(count)
+            M._anchor_features(doc, f)
+            self.assertEqual(f["hold_lo"], 0, count)
+
+    def test_an_absent_count_is_not_an_accusation(self):
+        """"nobody holds it" and "nobody said" are different claims, and a
+        chain that omits holders_count must not raise the flag on every
+        token it serves."""
+        for value in (None, "", "0", "not-a-number"):
+            f = blank()
+            doc = json.loads(json.dumps(ANCHOR))
+            doc["token"]["holders_count"] = value
+            M._anchor_features(doc, f)
+            self.assertEqual(f["hold_lo"], 0, repr(value))
+
+    def test_a_missing_key_is_not_an_accusation(self):
+        f = blank()
+        doc = json.loads(json.dumps(ANCHOR))
+        del doc["token"]["holders_count"]
+        M._anchor_features(doc, f)
+        self.assertEqual(f["hold_lo"], 0)
+
+    def test_usdt_is_not_thinly_held(self):
+        f = blank()
+        M._anchor_features(ANCHOR, f)
+        self.assertEqual(f["hold_lo"], 0)
+
+    def test_thin_holders_alone_reach_medium(self):
+        f = feats(src_addr=1, verified=2, hold_lo=1)
+        self.assertEqual(M._score(f)["rug_level"], "MEDIUM")
+
+    def test_the_hold_ct_ladder_is_unchanged_by_the_new_bit(self):
+        """`hold_lo` is a second, finer reading of the same number. It must
+        not disturb the decade ladder the rubric scores on."""
+        for count, rung in ((0, 0), (9, 0), (10, 1), (99, 1), (100, 2)):
+            f = blank()
+            doc = json.loads(json.dumps(ANCHOR))
+            doc["token"]["holders_count"] = str(count)
+            M._anchor_features(doc, f)
+            self.assertEqual(f["hold_ct"], rung, count)
+
+
+class TestConcentratedSupply(unittest.TestCase):
+    """CONCENTRATED_SUPPLY - the top holder owns more than half."""
+
+    def test_the_threshold_is_the_fifty_percent_rung(self):
+        """TOP1_LADDER inverted: rung 2 and below means p1 > 50."""
+        for percent, flagged in ((90, True), (76, True), (51, True),
+                                 (50, False), (30, False), (1, False)):
+            f = feats(src_addr=1, src_holders=1, verified=2,
+                      top1=M._inv_rank(percent, M.TOP1_LADDER))
+            raised = "CONCENTRATED_SUPPLY" in M._score(f)["rug_flags"]
+            self.assertEqual(raised, flagged, percent)
+
+    def test_it_needs_the_holders_page(self):
+        f = feats(src_addr=1, verified=2, top1=0)
+        self.assertNotIn("CONCENTRATED_SUPPLY", M._score(f)["rug_flags"])
+
+    def test_it_comes_from_the_holders_extraction(self):
+        f = blank()
+        doc = holders_doc(int(SUPPLY * 0.6), int(SUPPLY * 0.1))
+        M._holders_features(doc, SUPPLY, f)
+        self.assertIn("CONCENTRATED_SUPPLY",
+                      M._rug_flags(dict(f, src_addr=1, verified=2)))
+
+    def test_a_well_distributed_page_raises_nothing(self):
+        f = blank()
+        doc = holders_doc(*([SUPPLY // 100] * 50))
+        M._holders_features(doc, SUPPLY, f)
+        self.assertNotIn("CONCENTRATED_SUPPLY",
+                         M._rug_flags(dict(f, src_addr=1, verified=2)))
+
+    def test_the_old_seventy_five_percent_line_still_drives_the_ladder(self):
+        """The flag moved to 50%; the CRITICAL/HIGH rungs still key off the
+        75% rung, so loosening the flag did not loosen the ladder."""
+        severe = feats(src_addr=1, src_abi=1, src_holders=1, verified=2,
+                       mintable=1, top1=1)
+        milder = dict(severe)
+        milder["top1"] = 2
+        self.assertEqual(M._score(severe)["rug_level"], "HIGH")
+        self.assertEqual(M._score(milder)["rug_level"], "MEDIUM")
+
+
+class TestUnverifiedSource(unittest.TestCase):
+    """UNVERIFIED_SOURCE - 1.0.0's UNVERIFIED under the milestone's name."""
+
+    def test_the_flag_follows_the_ordinal(self):
+        f = feats(src_addr=1, verified=0)
+        self.assertIn("UNVERIFIED_SOURCE", M._score(f)["rug_flags"])
+        for level in (1, 2):
+            f["verified"] = level
+            self.assertNotIn("UNVERIFIED_SOURCE", M._score(f)["rug_flags"])
+
+    def test_the_old_name_is_gone(self):
+        """One flag, one name. A second flag firing on the same condition
+        would double-count in every aggregate that counts flags."""
+        f = feats(src_addr=1, verified=0)
+        self.assertNotIn("UNVERIFIED", M._score(f)["rug_flags"])
+
+    def test_no_two_flags_fire_on_the_same_condition(self):
+        f = feats(src_addr=1, src_holders=1, src_created=1, src_owner=1,
+                  verified=0, hidden_owner=1, hold_lo=1, top1=0, age=0)
+        flags = M._score(f)["rug_flags"]
+        self.assertEqual(len(flags), len(set(flags)))
+
+
+class TestFlagVocabulary(unittest.TestCase):
+    """The flag list as a whole: order, completeness, and purity."""
+
+    EXPECTED = ["EXPLORER_SCAM_FLAG", "MINTABLE", "PAUSABLE", "HAS_BLACKLIST",
+                "UPGRADEABLE_PROXY", "HIDDEN_OWNER", "UNVERIFIED_SOURCE",
+                "LOW_HOLDER_COUNT", "VERY_NEW", "CONCENTRATED_SUPPLY",
+                "OWNER_PRIVILEGED_METHODS"]
+
+    def test_every_flag_can_fire(self):
+        worst = feats(src_addr=1, src_abi=1, src_created=1, src_holders=1,
+                      src_owner=1, src_transfers=1, scam=1, mintable=1,
+                      pausable=1, blacklist=1, upgradeable=1, hidden_owner=1,
+                      verified=0, hold_lo=1, age=0, top1=0, owner_risk=2)
+        self.assertEqual(M._rug_flags(worst), self.EXPECTED)
+
+    def test_the_order_is_fixed(self):
+        """Two nodes that agree on the vector must produce the same LIST, not
+        the same set: the joined string is stored and hashed."""
+        worst = feats(src_addr=1, src_abi=1, src_created=1, src_holders=1,
+                      src_owner=1, scam=1, mintable=1, pausable=1,
+                      blacklist=1, upgradeable=1, hidden_owner=1, verified=0,
+                      hold_lo=1, age=0, top1=0, owner_risk=2)
+        for _ in range(5):
+            self.assertEqual(M._rug_flags(dict(worst)), self.EXPECTED)
+
+    def test_a_clean_token_raises_nothing(self):
+        f = healthy()
+        f["src_owner"] = 1
+        self.assertEqual(M._rug_flags(f), [])
+        self.assertEqual(M._score(f)["rug_level"], "NONE")
+
+    def test_each_flag_is_a_pure_function_of_one_or_more_ordinals(self):
+        for key, hi in M.FEATURE_RANGE:
+            for v in range(hi + 1):
+                f = healthy()
+                f[key] = v
+                self.assertEqual(M._rug_flags(f), M._rug_flags(dict(f)),
+                                 (key, v))
+
+    def test_no_flag_survives_a_vector_that_cannot_source_it(self):
+        empty = blank()
+        empty["src_addr"] = 1
+        self.assertEqual(M._rug_flags(empty), ["UNVERIFIED_SOURCE"])
+
+
+# --------------------------------------------------------------------------
+# MILESTONE 1.1.0 - feature 2: rescan and risk history
+# --------------------------------------------------------------------------
+
+
+class TestRiskDelta(unittest.TestCase):
+    """The previous score travels ON the record, not looked up beside it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_delta")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def test_a_first_score_has_no_previous(self):
+        self.chain.score(USDT, "ethereum", 80, seq=1)
+        view = self.chain.c.get_risk(USDT, "ethereum")
+        self.assertFalse(view["has_previous"])
+        self.assertEqual(view["risk_delta"], 0)
+        self.assertEqual(view["previous_overall"], 0)
+
+    def test_the_record_carries_its_own_frozen_delta(self):
+        rec = self.chain.score(USDT, "ethereum", 80, seq=1)
+        rec.prev_overall = self.module.u32(65)
+        rec.prev_seq = self.module.u32(1)
+        view = self.chain.c.get_risk(USDT, "ethereum")
+        self.assertTrue(view["has_previous"])
+        self.assertEqual(view["previous_overall"], 65)
+        self.assertEqual(view["risk_delta"], 15)
+
+    def test_a_negative_delta_is_reported_as_negative(self):
+        rec = self.chain.score(USDT, "ethereum", 40, seq=2)
+        rec.prev_overall = self.module.u32(85)
+        rec.prev_seq = self.module.u32(1)
+        self.assertEqual(
+            self.chain.c.get_risk(USDT, "ethereum")["risk_delta"], -45)
+
+    def test_zero_delta_and_no_previous_are_distinguishable(self):
+        """Both report risk_delta 0; only has_previous tells them apart, and
+        a UI that showed "unchanged" for a first scan would be lying."""
+        rec = self.chain.score(USDT, "ethereum", 80, seq=2)
+        rec.prev_overall = self.module.u32(80)
+        rec.prev_seq = self.module.u32(1)
+        unchanged = self.chain.c.get_risk(USDT, "ethereum")
+        self.assertEqual(unchanged["risk_delta"], 0)
+        self.assertTrue(unchanged["has_previous"])
+
+    def test_the_delta_appears_in_every_view(self):
+        rec = self.chain.score(USDT, "ethereum", 80, seq=2)
+        rec.prev_overall = self.module.u32(70)
+        rec.prev_seq = self.module.u32(1)
+        for view in (self.chain.c.get_risk(USDT, "ethereum"),
+                     self.chain.c.get_risk_by_id(int(rec.score_id))):
+            self.assertEqual(view["risk_delta"], 10)
+
+
+class TestTokenId(unittest.TestCase):
+    """token_id - the handle rescan_token and get_risk_history share."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_tokenid")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def test_ids_are_one_based_and_in_arrival_order(self):
+        self.chain.score(USDT, "ethereum", 80)
+        self.chain.score(PEPE, "ethereum", 70)
+        self.assertEqual(
+            self.chain.c.get_risk(USDT, "ethereum")["token_id"], 1)
+        self.assertEqual(
+            self.chain.c.get_risk(PEPE, "ethereum")["token_id"], 2)
+
+    def test_the_same_address_on_two_chains_gets_two_ids(self):
+        self.chain.score(USDT, "ethereum", 80)
+        self.chain.score(USDT, "arbitrum", 60)
+        self.assertNotEqual(
+            self.chain.c.get_risk(USDT, "ethereum")["token_id"],
+            self.chain.c.get_risk(USDT, "arbitrum")["token_id"])
+
+    def test_rescoring_does_not_issue_a_second_id(self):
+        self.chain.score(USDT, "ethereum", 80, seq=1)
+        self.chain.score(USDT, "ethereum", 85, seq=2)
+        self.assertEqual(
+            self.chain.c.get_risk(USDT, "ethereum")["token_id"], 1)
+        self.assertEqual(len(self.chain.c.get_tracked_tokens()["keys"]), 1)
+
+    def test_an_id_resolves_back_to_its_key(self):
+        self.chain.score(USDT, "ethereum", 80)
+        self.assertEqual(self.chain.c._key_by_id(1), "ethereum:" + USDT)
+
+    def test_out_of_range_ids_resolve_to_nothing(self):
+        self.chain.score(USDT, "ethereum", 80)
+        for bad in (0, -1, 2, 999):
+            self.assertEqual(self.chain.c._key_by_id(bad), "")
+
+    def test_a_key_splits_back_into_chain_and_address(self):
+        self.assertEqual(self.chain.c._split("ethereum:" + USDT),
+                         ("ethereum", USDT))
+
+
+class TestRescanToken(unittest.TestCase):
+    """rescan_token resolves and delegates; it never scores by itself."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_rescan")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def test_an_unknown_id_is_refunded_not_raised(self):
+        """Value is attached by the time this runs, so a refusal must credit
+        rather than revert - the deposit would otherwise be stranded."""
+        self.chain.gl.message.value = 10 ** 16
+        out = self.chain.c.rescan_token(42)
+        self.chain.gl.message.value = 0
+        self.assertEqual(out["status"], "REJECTED")
+        self.assertEqual(out["refund_wei"], 10 ** 16)
+        self.assertEqual(self.chain.c.get_refund(WALLET_A), 10 ** 16)
+
+    def test_the_refusal_names_the_id_and_the_way_out(self):
+        out = self.chain.c.rescan_token(7)
+        self.assertIn("7", out["reason"])
+        self.assertIn("get_tracked_tokens", out["reason"])
+
+    def test_a_known_id_reaches_the_scoring_path(self):
+        """The nondet round is offline here, so reaching `_scan` at all is
+        what is under test - it gets as far as the cooldown and stops."""
+        self.chain.score(USDT, "ethereum", 80)
+        self.chain.c.feeds["ethereum:" + USDT].last_scored = self.module.u64(
+            self.chain.c._now())
+        self.chain.gl.message.value = int(self.chain.c.fee_wei)
+        try:
+            out = self.chain.c.rescan_token(1)
+        finally:
+            self.chain.gl.message.value = 0
+        self.assertEqual(out["status"], "REJECTED")
+        self.assertIn("retry in", out["reason"])
+
+    def test_it_is_payable_like_request_risk(self):
+        for name in ("request_risk", "rescan_token"):
+            self.assertIn(name, dir(self.chain.c))
+
+    def test_there_is_exactly_one_scoring_path(self):
+        """Both entry points must funnel into `_scan`, or a rescan could
+        drift from a first scan without any test noticing."""
+        tree = ast.parse(SOURCE.read_text(encoding="utf8"))
+        callers = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "_scan"):
+                    callers.add(node.name)
+        self.assertEqual(callers, {"request_risk", "rescan_token"})
+
+    def test_run_nondet_is_called_from_exactly_one_place(self):
+        source = SOURCE.read_text(encoding="utf8")
+        self.assertEqual(source.count("run_nondet_unsafe("), 1)
+
+
+class TestRiskHistory(unittest.TestCase):
+    """get_risk_history(token_id) and get_history_by_address."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_history")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def _planted(self, *overalls):
+        for i, overall in enumerate(overalls):
+            rec = self.chain.score(USDT, "ethereum", overall, seq=i + 1)
+            if i:
+                rec.prev_overall = self.module.u32(overalls[i - 1])
+                rec.prev_seq = self.module.u32(i)
+        self.chain.c.feeds["ethereum:" + USDT].update_count = self.module.u32(
+            len(overalls))
+
+    def test_an_unknown_id_is_reported_not_raised(self):
+        out = self.chain.c.get_risk_history(99)
+        self.assertFalse(out["found"])
+        self.assertEqual(out["scores"], [])
+        self.assertIn("get_tracked_tokens", out["reason"])
+
+    def test_history_comes_back_newest_first(self):
+        self._planted(50, 60, 70)
+        out = self.chain.c.get_risk_history(1)
+        self.assertTrue(out["found"])
+        self.assertEqual([s["overall_score"] for s in out["scores"]],
+                         [70, 60, 50])
+
+    def test_it_carries_the_token_id_back(self):
+        self._planted(50)
+        self.assertEqual(self.chain.c.get_risk_history(1)["token_id"], 1)
+
+    def test_the_window_delta_spans_the_returned_rows(self):
+        self._planted(50, 60, 70)
+        out = self.chain.c.get_risk_history(1)
+        self.assertEqual(out["window_delta"], 20)
+
+    def test_the_latest_delta_is_the_newest_records_own(self):
+        self._planted(50, 60, 70)
+        self.assertEqual(self.chain.c.get_risk_history(1)["latest_delta"], 10)
+
+    def test_a_single_scan_has_no_window(self):
+        self._planted(50)
+        out = self.chain.c.get_risk_history(1)
+        self.assertEqual(out["window_delta"], 0)
+        self.assertEqual(out["latest_delta"], 0)
+
+    def test_the_address_form_returns_the_same_rows(self):
+        self._planted(50, 60)
+        by_id = self.chain.c.get_risk_history(1)
+        by_address = self.chain.c.get_history_by_address(USDT, "ethereum", 0)
+        self.assertEqual([s["score_id"] for s in by_id["scores"]],
+                         [s["score_id"] for s in by_address["scores"]])
+
+    def test_the_address_form_honours_its_count(self):
+        self._planted(50, 60, 70)
+        out = self.chain.c.get_history_by_address(USDT, "ethereum", 2)
+        self.assertEqual(out["returned"], 2)
+
+    def test_a_count_past_the_cap_is_clamped(self):
+        self._planted(50, 60)
+        out = self.chain.c.get_history_by_address(USDT, "ethereum", 10 ** 6)
+        self.assertEqual(out["returned"], 2)
+
+    def test_an_untracked_address_is_reported_not_raised(self):
+        out = self.chain.c.get_history_by_address(PEPE, "ethereum", 5)
+        self.assertFalse(out["found"])
+        self.assertEqual(out["scores"], [])
+        self.assertEqual(out["token_id"], 0)
+
+    def test_a_malformed_address_still_raises(self):
+        with self.assertRaises(_UserError):
+            self.chain.c.get_history_by_address("not-an-address", "ethereum", 5)
+
+    def test_both_forms_are_views(self):
+        source = SOURCE.read_text(encoding="utf8")
+        for name in ("get_risk_history", "get_history_by_address",
+                     "batch_scan"):
+            at = source.index("def " + name + "(")
+            self.assertIn("@gl.public.view", source[at - 200:at], name)
+
+
+# --------------------------------------------------------------------------
+# MILESTONE 1.1.0 - feature 3: the portfolio scanner
+# --------------------------------------------------------------------------
+
+
+class TestBatchScan(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_batch")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def test_an_empty_list_is_refused(self):
+        for empty in ([], "", "  ,  ,"):
+            with self.assertRaises(_UserError):
+                self.chain.c.batch_scan(empty, "ethereum")
+
+    def test_a_non_list_is_refused(self):
+        for bad in (42, None, {"a": 1}):
+            with self.assertRaises(_UserError):
+                self.chain.c.batch_scan(bad, "ethereum")
+
+    def test_more_than_the_cap_is_refused(self):
+        many = [("0x%040x" % i) for i in range(1, self.module.BATCH_MAX + 2)]
+        with self.assertRaises(_UserError) as caught:
+            self.chain.c.batch_scan(many, "ethereum")
+        self.assertIn(str(self.module.BATCH_MAX), caught.exception.message)
+
+    def test_a_duplicate_does_not_consume_a_slot(self):
+        """Six pasted lines of which two are the same token are FIVE tokens.
+        Counting the cap before de-duplicating would refuse a portfolio that
+        fits."""
+        many = [("0x%040x" % i) for i in range(1, self.module.BATCH_MAX + 1)]
+        out = self.chain.c.batch_scan(many + [many[0]], "ethereum")
+        self.assertEqual(out["requested"], self.module.BATCH_MAX)
+
+    def test_exactly_the_cap_is_accepted(self):
+        many = [("0x%040x" % i) for i in range(1, self.module.BATCH_MAX + 1)]
+        out = self.chain.c.batch_scan(many, "ethereum")
+        self.assertEqual(out["requested"], self.module.BATCH_MAX)
+
+    def test_a_comma_separated_string_is_accepted(self):
+        out = self.chain.c.batch_scan(USDT + "," + PEPE, "ethereum")
+        self.assertEqual(out["requested"], 2)
+
+    def test_whitespace_and_blanks_are_ignored(self):
+        out = self.chain.c.batch_scan(" " + USDT + " , , " + PEPE + " ",
+                                      "ethereum")
+        self.assertEqual(out["requested"], 2)
+
+    def test_duplicates_are_collapsed(self):
+        """Counting a pasted duplicate twice would move every aggregate."""
+        out = self.chain.c.batch_scan([USDT, USDT.upper(), USDT], "ethereum")
+        self.assertEqual(out["requested"], 1)
+
+    def test_explorer_urls_are_accepted_like_everywhere_else(self):
+        out = self.chain.c.batch_scan(
+            ["https://eth.blockscout.com/address/" + USDT], "ethereum")
+        self.assertEqual(out["tokens"][0]["token_address"], USDT)
+
+    def test_a_malformed_address_raises(self):
+        with self.assertRaises(_UserError):
+            self.chain.c.batch_scan([USDT, "nonsense"], "ethereum")
+
+    def test_an_unsupported_chain_raises(self):
+        with self.assertRaises(_UserError):
+            self.chain.c.batch_scan([USDT], "solana")
+
+    def test_unscored_addresses_are_named(self):
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(sorted(out["unscored"]), sorted([USDT, PEPE]))
+        self.assertEqual(out["scored"], 0)
+        self.assertEqual(out["coverage_pct"], 0)
+
+    def test_coverage_is_a_percentage_of_the_request(self):
+        self.chain.score(USDT, "ethereum", 80)
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["scored"], 1)
+        self.assertEqual(out["coverage_pct"], 50)
+
+    def test_unscored_rows_sort_to_the_front(self):
+        """An address nobody has checked is the one to look at first, and a
+        zero score would otherwise put it beside the worst real result."""
+        self.chain.score(USDT, "ethereum", 80)
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertFalse(out["tokens"][0]["scored"])
+        self.assertEqual(out["tokens"][0]["rank"], 1)
+
+    def test_scored_rows_sort_riskiest_first(self):
+        self.chain.score(USDT, "ethereum", 90)
+        self.chain.score(PEPE, "ethereum", 30)
+        self.chain.score(LINK, "ethereum", 60)
+        out = self.chain.c.batch_scan([USDT, PEPE, LINK], "ethereum")
+        self.assertEqual([t["overall_score"] for t in out["tokens"]],
+                         [30, 60, 90])
+        self.assertEqual([t["rank"] for t in out["tokens"]], [1, 2, 3])
+
+    def test_a_worse_rug_level_breaks_a_score_tie(self):
+        self.chain.score(USDT, "ethereum", 60, rug="LOW")
+        self.chain.score(PEPE, "ethereum", 60, rug="CRITICAL")
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["tokens"][0]["token_address"], PEPE)
+
+    def test_the_mean_ignores_unscored_rows(self):
+        self.chain.score(USDT, "ethereum", 80)
+        self.chain.score(PEPE, "ethereum", 60)
+        out = self.chain.c.batch_scan([USDT, PEPE, LINK], "ethereum")
+        self.assertEqual(out["mean_score"], 70)
+
+    def test_the_portfolio_score_is_weighted_by_market_cap_bucket(self):
+        self.chain.score(USDT, "ethereum", 90, evidence=feats(mcap=5))
+        self.chain.score(PEPE, "ethereum", 30, evidence=feats(mcap=0))
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        # (90*6 + 30*1) // 7 == 81, against a plain mean of 60.
+        self.assertEqual(out["portfolio_score"], 81)
+        self.assertEqual(out["mean_score"], 60)
+
+    def test_equal_buckets_reduce_to_the_mean(self):
+        self.chain.score(USDT, "ethereum", 80, evidence=feats(mcap=3))
+        self.chain.score(PEPE, "ethereum", 60, evidence=feats(mcap=3))
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["portfolio_score"], out["mean_score"])
+
+    def test_the_weight_is_reported_per_row(self):
+        self.chain.score(USDT, "ethereum", 80, evidence=feats(mcap=4))
+        out = self.chain.c.batch_scan([USDT], "ethereum")
+        self.assertEqual(out["tokens"][0]["weight"], 5)
+
+    def test_unparseable_evidence_falls_back_to_the_lightest_weight(self):
+        rec = self.chain.score(USDT, "ethereum", 80)
+        rec.evidence = "not json"
+        out = self.chain.c.batch_scan([USDT], "ethereum")
+        self.assertEqual(out["tokens"][0]["weight"], 1)
+
+    def test_an_all_unscored_portfolio_scores_zero_rather_than_dividing(self):
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["portfolio_score"], 0)
+        self.assertEqual(out["mean_score"], 0)
+
+    def test_flagged_counts_tokens_with_at_least_one_flag(self):
+        self.chain.score(USDT, "ethereum", 80, flags="MINTABLE,PAUSABLE")
+        self.chain.score(PEPE, "ethereum", 70, flags="")
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["flagged_tokens"], 1)
+
+    def test_total_flags_sums_across_the_portfolio(self):
+        self.chain.score(USDT, "ethereum", 80, flags="MINTABLE,PAUSABLE")
+        self.chain.score(PEPE, "ethereum", 70, flags="HIDDEN_OWNER")
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["total_rug_flags"], 3)
+
+    def test_flag_count_is_reported_per_row(self):
+        self.chain.score(USDT, "ethereum", 80,
+                         flags="MINTABLE,PAUSABLE,HIDDEN_OWNER")
+        out = self.chain.c.batch_scan([USDT], "ethereum")
+        self.assertEqual(out["tokens"][0]["flag_count"], 3)
+
+    def test_high_risk_counts_only_high_and_critical(self):
+        self.chain.score(USDT, "ethereum", 80, rug="MEDIUM")
+        self.chain.score(PEPE, "ethereum", 40, rug="HIGH")
+        self.chain.score(LINK, "ethereum", 20, rug="CRITICAL")
+        out = self.chain.c.batch_scan([USDT, PEPE, LINK], "ethereum")
+        self.assertEqual(out["high_risk_tokens"], 2)
+
+    def test_the_worst_rug_level_and_its_token_are_reported(self):
+        self.chain.score(USDT, "ethereum", 80, rug="LOW")
+        self.chain.score(PEPE, "ethereum", 40, rug="HIGH")
+        out = self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(out["worst_rug_level"], "HIGH")
+        self.assertEqual(out["worst_token"], PEPE)
+
+    def test_an_unscored_portfolio_has_no_worst(self):
+        out = self.chain.c.batch_scan([USDT], "ethereum")
+        self.assertEqual(out["worst_rug_level"], "UNKNOWN")
+        self.assertEqual(out["worst_token"], "")
+
+    def test_unscored_rows_carry_the_unscored_badge(self):
+        row = self.chain.c.batch_scan([USDT], "ethereum")["tokens"][0]
+        self.assertEqual(row["badge"], "UNSCORED")
+        self.assertEqual(row["rug_level"], "UNKNOWN")
+        self.assertEqual(row["flag_count"], 0)
+        self.assertTrue(row["explorer_url"].endswith(USDT))
+
+    def test_scored_rows_carry_the_full_view(self):
+        self.chain.score(USDT, "ethereum", 80)
+        row = self.chain.c.batch_scan([USDT], "ethereum")["tokens"][0]
+        for field in ("score_id", "symbol", "content_hash", "confidence",
+                      "token_id", "risk_delta", "rubric_version"):
+            self.assertIn(field, row)
+
+    def test_the_chain_is_normalised(self):
+        self.chain.score(USDT, "ethereum", 80)
+        out = self.chain.c.batch_scan([USDT], "  ETHEREUM ")
+        self.assertEqual(out["chain"], "ethereum")
+        self.assertEqual(out["scored"], 1)
+
+    def test_it_reads_only_the_chain_it_was_asked_about(self):
+        self.chain.score(USDT, "arbitrum", 80)
+        out = self.chain.c.batch_scan([USDT], "ethereum")
+        self.assertEqual(out["scored"], 0)
+
+    def test_it_writes_nothing(self):
+        """A view that mutated would be a fee-free write path."""
+        self.chain.score(USDT, "ethereum", 80)
+        before = self.chain.c.get_stats()
+        self.chain.c.batch_scan([USDT, PEPE], "ethereum")
+        self.assertEqual(self.chain.c.get_stats(), before)
+        self.assertEqual(len(self.chain.c.get_tracked_tokens()["keys"]), 1)
+
+    def test_the_capacity_and_weighting_are_self_described(self):
+        out = self.chain.c.batch_scan([USDT], "ethereum")
+        self.assertEqual(out["capacity"], self.module.BATCH_MAX)
+        self.assertIn("market-cap", out["weighting"])
+
+
+# --------------------------------------------------------------------------
+# MILESTONE 1.1.0 - the config surface and the consensus object
+# --------------------------------------------------------------------------
+
+
+class TestMilestoneSurface(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_full(SOURCE, "tokenscope_surface")
+
+    def setUp(self):
+        self.chain = _Chain(self.module)
+
+    def test_the_rubric_version_moved(self):
+        self.assertEqual(self.module.RUBRIC_VERSION, "1.1.0")
+
+    def test_config_advertises_the_whole_flag_vocabulary(self):
+        names = self.chain.c.get_config()["rug_flag_names"]
+        self.assertEqual(names, TestFlagVocabulary.EXPECTED)
+
+    def test_config_advertises_the_new_constants(self):
+        config = self.chain.c.get_config()
+        self.assertEqual(config["low_holder_line"], 50)
+        self.assertEqual(config["batch_max"], self.module.BATCH_MAX)
+        self.assertEqual(config["owner_selector"], "0x8da5cb5b")
+
+    def test_config_feature_ranges_match_the_vector(self):
+        config = self.chain.c.get_config()
+        self.assertEqual([tuple(r) for r in config["feature_ranges"]],
+                         list(self.module.FEATURE_RANGE))
+
+    def test_the_vector_grew_by_exactly_three_ordinals(self):
+        self.assertEqual(len(self.module.FEATURE_RANGE), 32)
+
+    def test_the_vector_keys_are_unique_and_sorted(self):
+        keys = [k for k, _hi in self.module.FEATURE_RANGE]
+        self.assertEqual(keys, sorted(set(keys)))
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_check_rug_pull_reports_the_new_checks(self):
+        self.chain.score(USDT, "ethereum", 80,
+                         evidence=feats(hidden_owner=1, hold_lo=1,
+                                        src_holders=1, src_owner=1, top1=1))
+        out = self.chain.c.check_rug_pull(USDT, "ethereum")
+        self.assertTrue(out["checks"]["owner_is_live"])
+        self.assertTrue(out["checks"]["low_holder_count"])
+        self.assertTrue(out["checks"]["top_holder_over_half"])
+        self.assertTrue(out["owner_probe"])
+        self.assertEqual(out["low_holder_line"], 50)
+
+    def test_check_rug_pull_reports_renouncement_as_a_mitigation(self):
+        self.chain.score(USDT, "ethereum", 80,
+                         evidence=feats(renounced=1, src_owner=1))
+        out = self.chain.c.check_rug_pull(USDT, "ethereum")
+        self.assertTrue(out["mitigations"]["ownership_renounced"])
+        self.assertFalse(out["checks"]["owner_is_live"])
+
+    def test_an_unprobed_record_says_so(self):
+        self.chain.score(USDT, "ethereum", 80, evidence=feats())
+        self.assertFalse(
+            self.chain.c.check_rug_pull(USDT, "ethereum")["owner_probe"])
+
+    def test_verify_risk_still_recomputes_every_field(self):
+        """The record the milestone writes must still be provable from its
+        own evidence alone, new ordinals included."""
+        vector = feats(src_addr=1, src_abi=1, src_owner=1, src_holders=1,
+                       verified=2, proxy_v=2, hidden_owner=1, hold_lo=1,
+                       top1=1, methods=2)
+        scores = self.module._score(vector)
+        rec = self.chain.score(
+            USDT, "ethereum", scores["overall"],
+            rug=scores["rug_level"], badge=scores["badge"],
+            flags=",".join(scores["rug_flags"]), evidence=vector)
+        for key, attribute in (("distribution", "distribution_score"),
+                               ("activity", "activity_score"),
+                               ("verification", "verification_score"),
+                               ("maturity", "maturity_score"),
+                               ("liquidity", "liquidity_score")):
+            setattr(rec, attribute, self.module.u32(scores[key]))
+        rec.confidence = scores["confidence"]
+        rec.sources_ok = self.module._sources(vector)
+        rec.content_hash = self.module._digest("ethereum", USDT,
+                                               str(rec.symbol), vector)
+        rec.evidence = self.module._canon(vector)
+        out = self.chain.c.verify_risk(int(rec.score_id))
+        self.assertEqual(out["failed"], [])
+        self.assertTrue(out["valid"])
+
+    def test_every_milestone_method_exists(self):
+        for want in ("rescan_token", "batch_scan", "get_risk_history",
+                     "get_history_by_address"):
+            self.assertTrue(hasattr(self.chain.c, want), want)
+
+    def test_the_readme_promise_list_still_holds(self):
+        tree = ast.parse(SOURCE.read_text(encoding="utf8"))
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "TokenScope":
+                for sub in node.body:
+                    if isinstance(sub, ast.FunctionDef):
+                        names.add(sub.name)
+        for want in ("request_risk", "rescan_token", "batch_scan",
+                     "get_risk", "get_risk_by_id", "get_risk_history",
+                     "get_history_by_address", "get_risk_trend", "get_badge",
+                     "is_safe", "require_safe", "compare_tokens",
+                     "get_safest_tokens", "get_riskiest_tokens",
+                     "verify_risk", "get_stats", "get_config",
+                     "check_rug_pull", "claim_refund", "withdraw",
+                     "set_paused", "transfer_ownership", "clear_stale_pending",
+                     "get_evidence", "add_to_watchlist",
+                     "remove_from_watchlist", "get_watchlist"):
+            self.assertIn(want, names, want)
+
+
+class TestMilestoneConsensus(unittest.TestCase):
+    """The new ordinals have to be bound exactly like the old ones."""
+
+    def test_the_coherence_gate_rejects_a_short_vector(self):
+        p = payload()
+        del p["features"]["hidden_owner"]
+        self.assertFalse(M._coherent(p, "ethereum", USDT))
+
+    def test_the_coherence_gate_rejects_an_out_of_range_new_ordinal(self):
+        for key in ("hidden_owner", "hold_lo", "src_owner"):
+            p = payload()
+            p["features"][key] = 2
+            self.assertFalse(M._coherent(p, "ethereum", USDT), key)
+
+    def test_the_coherence_gate_rejects_a_forged_new_flag(self):
+        """A leader claiming HIDDEN_OWNER in `scores` without the ordinal is
+        incoherent before any comparison happens."""
+        p = payload()
+        p["scores"]["rug_level"] = "CRITICAL"
+        self.assertFalse(M._coherent(p, "ethereum", USDT))
+
+    def test_disagreement_on_a_new_ordinal_fails_the_round(self):
+        for key in ("hidden_owner", "hold_lo", "src_owner"):
+            mine = payload()
+            theirs = payload()
+            theirs["features"][key] = 1 - theirs["features"][key]
+            self.assertFalse(M._agrees(theirs, mine), key)
+
+    def test_the_canonical_form_covers_every_new_ordinal(self):
+        canonical = json.loads(M._canon(healthy()))
+        for key in ("hidden_owner", "hold_lo", "src_owner"):
+            self.assertIn(key, canonical)
+
+    def test_the_digest_length_prefix_moved_with_the_vector(self):
+        """The hash is prefixed with the canonical length, so a vector that
+        gained ordinals cannot collide with a 1.0.0 one."""
+        digest = M._digest("ethereum", USDT, "USDT", healthy())
+        self.assertEqual(int(digest.split(":")[0]),
+                         len("ethereum|" + USDT + "|USDT|"
+                             + M._canon(healthy())))
+
+
+# --------------------------------------------------------------------------
+# the renaming pass
+#
+# The minifier now renames identifiers, which is a rewrite of the deployable
+# file and gets the same treatment string pooling got: its own tests, because
+# a renaming bug that happened not to change a score would otherwise ship
+# unnoticed. The behavioural proof is TestDeployableArtifact, which re-runs
+# the whole battery through the renamed module.
+# --------------------------------------------------------------------------
+
+
+class TestIdentifierRenaming(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        names = ARTIFACT.with_suffix(".names.json")
+        if not ARTIFACT.exists() or not names.exists():
+            raise unittest.SkipTest("build the artifact first")
+        cls.text = ARTIFACT.read_text(encoding="utf8")
+        cls.tree = ast.parse(cls.text)
+        cls.names = json.loads(names.read_text(encoding="utf8"))
+
+    def test_the_map_is_not_empty(self):
+        """If renaming silently stopped, the artifact would grow past the
+        deploy ceiling and only the size test would notice."""
+        self.assertGreater(len(self.names), 50)
+
+    def test_the_map_is_injective(self):
+        """Two originals sharing a short name would merge two functions."""
+        self.assertEqual(len(set(self.names.values())), len(self.names))
+
+    def test_every_renamed_original_is_gone_from_the_artifact(self):
+        bound = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                bound.add(node.name)
+            elif isinstance(node, ast.Name):
+                bound.add(node.id)
+        for original in self.names:
+            self.assertNotIn(original, bound, original)
+
+    def test_every_renamed_target_is_defined_in_the_artifact(self):
+        bound = set()
+        for node in self.tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                bound.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        bound.add(target.id)
+        for original, short in self.names.items():
+            self.assertIn(short, bound, original + " -> " + short)
+
+    def test_no_public_method_was_renamed(self):
+        source_methods = set()
+        for node in ast.walk(ast.parse(SOURCE.read_text(encoding="utf8"))):
+            if isinstance(node, ast.ClassDef):
+                for sub in node.body:
+                    if isinstance(sub, ast.FunctionDef):
+                        source_methods.add(sub.name)
+        artifact_methods = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ClassDef):
+                for sub in node.body:
+                    if isinstance(sub, ast.FunctionDef):
+                        artifact_methods.add(sub.name)
+        self.assertEqual(source_methods, artifact_methods)
+
+    def test_no_public_parameter_was_renamed(self):
+        """Parameter names are the callable interface. A renamed one is an
+        ABI change that nothing else here would catch."""
+        def signatures(tree):
+            out = {}
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                for sub in node.body:
+                    if not isinstance(sub, ast.FunctionDef):
+                        continue
+                    decorated = any(
+                        "public" in ast.dump(d) for d in sub.decorator_list)
+                    if decorated:
+                        out[sub.name] = [a.arg for a in sub.args.args]
+            return out
+        self.assertEqual(
+            signatures(ast.parse(SOURCE.read_text(encoding="utf8"))),
+            signatures(self.tree))
+
+    def test_no_class_was_renamed(self):
+        def classes(tree):
+            return sorted(n.name for n in ast.walk(tree)
+                          if isinstance(n, ast.ClassDef))
+        self.assertEqual(
+            classes(ast.parse(SOURCE.read_text(encoding="utf8"))),
+            classes(self.tree))
+
+    def test_no_storage_field_was_renamed(self):
+        """Storage annotations are the on-chain layout."""
+        def fields(tree):
+            out = {}
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                names = []
+                for sub in node.body:
+                    if (isinstance(sub, ast.AnnAssign)
+                            and isinstance(sub.target, ast.Name)):
+                        names.append(sub.target.id)
+                out[node.name] = names
+            return out
+        self.assertEqual(
+            fields(ast.parse(SOURCE.read_text(encoding="utf8"))),
+            fields(self.tree))
+
+    def test_no_attribute_was_renamed(self):
+        def attributes(tree):
+            return sorted({n.attr for n in ast.walk(tree)
+                           if isinstance(n, ast.Attribute)})
+        self.assertEqual(
+            attributes(ast.parse(SOURCE.read_text(encoding="utf8"))),
+            attributes(self.tree))
+
+    def test_no_string_value_changed(self):
+        """A renamer that touched a prompt or a dict key would change what
+        validators are asked or what storage is keyed by."""
+        def strings(tree):
+            # Docstrings are statements the minifier deletes on purpose, so
+            # they are excluded here; every other literal is a value.
+            docs = set()
+            for node in ast.walk(tree):
+                body = getattr(node, "body", None)
+                if not isinstance(body, list):
+                    continue
+                for statement in body:
+                    if (isinstance(statement, ast.Expr)
+                            and isinstance(statement.value, ast.Constant)
+                            and isinstance(statement.value.value, str)):
+                        docs.add(id(statement.value))
+            return sorted(n.value for n in ast.walk(tree)
+                          if isinstance(n, ast.Constant)
+                          and isinstance(n.value, str)
+                          and id(n) not in docs)
+        source_strings = strings(ast.parse(SOURCE.read_text(encoding="utf8")))
+        artifact_strings = set(strings(self.tree))
+        self.assertIn("owner()", "".join(source_strings) + "owner()")
+        for value in source_strings:
+            self.assertIn(value, artifact_strings, repr(value[:40]))
+
+    def test_the_runner_header_is_byte_identical(self):
+        self.assertEqual(self.text.split("\n")[0],
+                         SOURCE.read_text(encoding="utf8").split("\n")[0])
+
+    def test_no_renamed_name_collides_with_a_builtin(self):
+        for short in self.names.values():
+            self.assertNotIn(short, dir(builtins), short)
+
+    def test_no_renamed_name_is_a_keyword(self):
+        import keyword
+        for short in self.names.values():
+            self.assertFalse(keyword.iskeyword(short), short)
+
+    def test_the_artifact_and_the_source_have_the_same_shape(self):
+        """Same number of functions, same number of statements per function:
+        a renamer is not allowed to drop or add code."""
+        def shape(tree):
+            def real_body(node):
+                body = node.body
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)
+                        and len(body) > 1):
+                    body = body[1:]
+                return len(body)
+            return sorted(real_body(n) for n in ast.walk(tree)
+                          if isinstance(n, ast.FunctionDef))
+        self.assertEqual(
+            shape(ast.parse(SOURCE.read_text(encoding="utf8"))),
+            shape(self.tree))
+
+    def test_renaming_is_deterministic(self):
+        """Two builds of the same source must produce the same artifact, or
+        the checksum in deployments.json means nothing."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            import importlib
+            minifier = importlib.import_module("minify_contract")
+            source = SOURCE.read_text(encoding="utf8")
+            first = minifier.minify(source)
+            second = minifier.minify(source)
+            self.assertEqual(first[0], second[0])
+            self.assertEqual(first[1], second[1])
+            self.assertEqual(first[0], self.text)
+        finally:
+            sys.path.remove(str(ROOT / "tools"))
+
+    def test_disabling_the_pass_still_produces_a_valid_contract(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            import importlib
+            minifier = importlib.import_module("minify_contract")
+            plain, mapping, _defs = minifier.minify(
+                SOURCE.read_text(encoding="utf8"), rename=False)
+            self.assertEqual(mapping, {})
+            ast.parse(plain)
+            # And renaming is what buys the headroom.
+            self.assertGreater(len(plain.encode("utf8")),
+                               len(self.text.encode("utf8")))
+        finally:
+            sys.path.remove(str(ROOT / "tools"))
 
 
 if __name__ == "__main__":

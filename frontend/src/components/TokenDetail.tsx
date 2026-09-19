@@ -11,7 +11,9 @@ import {
   ShieldAlert,
   TriangleAlert,
 } from "lucide-react";
+import Link from "next/link";
 import { ScoreCard } from "./ScoreCard";
+import { RiskDelta } from "./RiskDelta";
 import { NoFlagsCard, RugFlagCard } from "./RugFlagCard";
 import { RiskChart } from "./RiskChart";
 import { WatchButton } from "./WatchButton";
@@ -19,8 +21,8 @@ import { ChainSelector } from "./ChainSelector";
 import {
   checkRugPull,
   getEvidence,
+  getHistoryByAddress,
   getRisk,
-  getRiskHistory,
   getRiskTrend,
   verifyRisk,
 } from "@/lib/contract";
@@ -33,7 +35,7 @@ async function loadToken([, token, chain]: [string, string, ChainName]) {
   if (!record) return { record: null } as const;
   const [rug, history, trend, evidence] = await Promise.all([
     checkRugPull(token, chain).catch(() => null),
-    getRiskHistory(token, chain, 12).catch(() => null),
+    getHistoryByAddress(token, chain, 12).catch(() => null),
     getRiskTrend(token, chain).catch(() => null),
     getEvidence(record.score_id).catch(() => null),
   ]);
@@ -120,6 +122,14 @@ export function TokenDetail({
 
       <ScoreCard record={record} showLink={false} />
 
+      {/* the milestone's headline: how far this moved since the last round */}
+      <RiskDelta
+        delta={record.risk_delta ?? 0}
+        hasPrevious={record.has_previous ?? false}
+        previous={record.previous_overall ?? 0}
+        scans={history?.update_count}
+      />
+
       {/* verdict + trend */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div
@@ -189,18 +199,40 @@ export function TokenDetail({
                 ["Can blacklist or seize", rug.checks.has_blacklist, true],
                 ["Logic is upgradeable", rug.checks.is_proxy, true],
                 ["Flagged as a scam", rug.checks.explorer_scam_flag, true],
+                ["owner() is a live address", rug.checks.owner_is_live ?? false, true],
               ]}
             />
             <CheckList
               title="Mitigations"
               items={[
                 ["Source verified", rug.checks.is_verified, false],
-                ["No owner surface in the ABI", rug.mitigations?.no_owner_surface ?? false, false],
+                [
+                  rug.owner_probe
+                    ? "Ownership renounced (owner() is a burn address)"
+                    : "No owner surface in the ABI",
+                  rug.mitigations?.ownership_renounced ?? false,
+                  false,
+                ],
                 ["Top holder is a contract", rug.mitigations?.top_holder_is_contract ?? false, false],
                 ["ABI available to read", rug.abi_available ?? false, false],
+                [
+                  `At least ${rug.low_holder_line ?? 50} holders`,
+                  !(rug.checks.low_holder_count ?? false),
+                  false,
+                ],
               ]}
             />
           </div>
+        ) : null}
+
+        {rug && rug.owner_probe === false ? (
+          <p className="mt-3 rounded-lg border border-hairline bg-ink-50 px-3 py-2 text-xs leading-relaxed text-ink-600">
+            The owner probe did not resolve for this record, so
+            &ldquo;ownership renounced&rdquo; above is the older inference from
+            the ABI — whether an owner-shaped function exists at all — rather
+            than a reading of <code className="font-mono">owner()</code>. The
+            verification dimension rescaled to match; it was not penalised.
+          </p>
         ) : null}
       </section>
 
@@ -217,6 +249,12 @@ export function TokenDetail({
           <div className="mt-4 rounded-2xl border border-hairline bg-surface p-5 shadow-card">
             <RiskChart scores={history.scores} capacity={history.capacity} />
           </div>
+          <Link
+            href={`/history/${address}?chain=${chain}`}
+            className="mt-3 inline-block text-sm font-semibold text-ink-700 underline underline-offset-4 transition hover:text-ink-900"
+          >
+            Every stored score, round by round →
+          </Link>
         </section>
       ) : history && history.scores?.length === 1 ? (
         <section>

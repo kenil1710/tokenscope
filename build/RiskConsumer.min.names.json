@@ -1,0 +1,14 @@
+{
+ "BAND_FLOORS": "_a",
+ "BAND_NAMES": "_b",
+ "BAND_TRADE_CAP": "_c",
+ "DEFAULT_MAX_AGE": "_d",
+ "DEFAULT_MAX_RUG": "_e",
+ "DEFAULT_MIN_SCORE": "_f",
+ "DEFAULT_SLOTS": "_g",
+ "ERR": "_h",
+ "MAX_LOG": "_i",
+ "RUG_RANK": "_j",
+ "_band": "_k",
+ "_short": "_l"
+}

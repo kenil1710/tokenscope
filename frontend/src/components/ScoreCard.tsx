@@ -10,6 +10,7 @@ import { ChainMark } from "./ChainMark";
 import { relativeTime, shortAddress } from "@/lib/format";
 import { CONFIDENCE_META } from "@/lib/risk";
 import { DIMENSIONS, type RiskRecord } from "@/types";
+import { DeltaChip } from "./RiskDelta";
 
 /** The full report, used by /scan after a scan and by /token as the summary. */
 export function ScoreCard({
@@ -78,7 +79,13 @@ export function ScoreCard({
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-500">
           <div className="flex gap-1.5">
             <dt>Scan</dt>
-            <dd className="tabular font-medium text-ink-700">#{record.seq}</dd>
+            <dd className="tabular flex items-center gap-1.5 font-medium text-ink-700">
+              #{record.seq}
+              <DeltaChip
+                delta={record.risk_delta ?? 0}
+                hasPrevious={record.has_previous ?? false}
+              />
+            </dd>
           </div>
           <div className="flex gap-1.5">
             <dt>Scored</dt>

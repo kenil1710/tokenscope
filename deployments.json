@@ -1,8 +1,20 @@
 {
   "project": "TokenScope",
   "category": "Intelligent Contracts",
-  "summary": "On-chain multi-chain ERC-20 risk assessment. Validators agree on a 29-ordinal feature vector; every score is arithmetic over it.",
-  "rubric_version": "1.0.0",
+  "summary": "On-chain multi-chain ERC-20 risk assessment. Validators agree on a 32-ordinal feature vector; every score is arithmetic over it.",
+  "rubric_version": "1.1.0",
+  "milestone": {
+    "of": "the accepted 1.0.0 submission",
+    "adds": [
+      "Deeper rug detection: HIDDEN_OWNER, UNVERIFIED_SOURCE, LOW_HOLDER_COUNT, CONCENTRATED_SUPPLY - four flags, all deterministic checks over explorer JSON, none of them asking the model anything.",
+      "Rescan and risk history: rescan_token(token_id), a previous score frozen onto every record, risk_delta, get_risk_history(token_id), get_history_by_address(token, chain, count), and a /history/[token] page.",
+      "Portfolio scanner: batch_scan(addresses, chain) over up to 5 tokens with on-chain aggregates, and a paste-addresses tab on /portfolio."
+    ],
+    "vector_change": "29 ordinals -> 32: hidden_owner, hold_lo, src_owner. _digest prefixes the hash with the canonical length, so a 1.1.0 hash (prefix 465) can never collide with a 1.0.0 one (prefix 422).",
+    "signature_change": "get_risk_history now takes token_id. The address-addressed form is get_history_by_address(token_address, chain, count). RiskConsumer is unaffected - it only calls get_risk, is_safe, require_safe, check_rug_pull, get_badge and get_stats.",
+    "renames": "UNVERIFIED -> UNVERIFIED_SOURCE and CONCENTRATED -> CONCENTRATED_SUPPLY, rather than adding duplicate flags that would double-count in batch_scan.total_rug_flags. CONCENTRATED_SUPPLY also moved from the 75% rung to the 50% one the name claims; the rug ladder still keys its severe rungs off 75%.",
+    "tests": "140 -> 292 tests, 6,936 assertions executed."
+  },
   "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
   "chains_scored": [
     "ethereum",
@@ -10,20 +22,22 @@
     "arbitrum",
     "polygon"
   ],
-  "data_source": "Blockscout /api/v2, unauthenticated",
-  "note": "Studionet and Bradbury run the same artifacts. Verify with: shasum -a 256 build/*.min.py and compare against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py",
+  "data_source": "Blockscout /api/v2 for the five REST documents, plus one eth_call of owner() over JSON-RPC - publicnode first, Blockscout's own /api/eth-rpc as the fallback. All unauthenticated.",
+  "note": "Verify with: shasum -a 256 build/*.min.py and compare against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py (the CLI appends trailing newlines; strip them).",
   "artifacts": {
     "build/TokenScope.min.py": {
-      "sha256": "3706a8a2b40cf55c261d88d47cba3901ff92e9fc01a47f38d2428a3b190a2621",
-      "bytes": 52070,
+      "sha256": "7075a978b3764d2337165ac2ee5dd31381e9a6dd76d282113b95ab109d9e9750",
+      "bytes": 51390,
       "source": "contracts/TokenScope.py",
-      "source_sha256": "8b7f4724e095eeea13483148a505aa7ed0a9278858a71a90df68036d29446e13"
+      "source_sha256": "d5fcbaeb1293b78835adf88992d07e6e6736014ebab3e8467fca67ae53e5d697",
+      "name_map": "build/TokenScope.min.names.json"
     },
     "build/RiskConsumer.min.py": {
-      "sha256": "320def897b05d95d25c7f3f95a3f9d4fdda5a3d5e9d6a35626119663d33badc7",
-      "bytes": 11823,
+      "sha256": "c94e79f96625ad5a41709e5c3cbfccec11aeecc40315d66c077a563ace730522",
+      "bytes": 10627,
       "source": "contracts/RiskConsumer.py",
-      "source_sha256": "17ff02e9550e03e4d96fbd71e1516efc344707b4d2d41ef42a4561b4ac23bcf8"
+      "source_sha256": "17ff02e9550e03e4d96fbd71e1516efc344707b4d2d41ef42a4561b4ac23bcf8",
+      "name_map": "build/RiskConsumer.min.names.json"
     }
   },
   "deployments": {
@@ -32,18 +46,17 @@
       "chain_id": "61999",
       "rpc": "https://studio.genlayer.com/api",
       "TokenScope": {
-        "address": "0xaC6B3575D82825533cA7E35fE8C57c9075b74E95",
-        "tx": "0xb09c72c44a930a8846d735e102087f5b8eab4a1976ad53cfce286310efdf746f",
+        "address": "0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88",
+        "rubric_version": "1.1.0",
         "artifact": "build/TokenScope.min.py",
         "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source.",
-        "verified": "genlayer code <address> is byte-identical to build/TokenScope.min.py (52,070 bytes, sha256 3706a8a2b40cf55c261d88d47cba3901ff92e9fc01a47f38d2428a3b190a2621), checked after stripping the CLI's own 'Result:' wrapper."
+        "verified": "genlayer code <address> is byte-identical to build/TokenScope.min.py (51,390 bytes) after stripping the two trailing newlines the CLI adds."
       },
       "RiskConsumer": {
-        "address": "0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28",
-        "tx": "0x773e61461ed28962206ddc6fb02328b9b21d7e598d9f0e17b1ba5704bb74edc7",
+        "address": "0xcb9c1E7214B4e610c28A3E8242d9bc2b793A8193",
         "artifact": "build/RiskConsumer.min.py",
         "constructor_args": [
-          "0xaC6B3575D82825533cA7E35fE8C57c9075b74E95"
+          "0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88"
         ]
       },
       "render_probe": {
@@ -52,9 +65,16 @@
         "why": "throwaway diagnostic, not part of TokenScope; the evidence behind docs/PROBE.md, including the 422 on ?type=ERC-20 and the transient 500 from base.blockscout.com"
       },
       "superseded": {
-        "TokenScope": "0x386245fE7e8c28967f84F79eb93532b12cCa9987",
-        "RiskConsumer": "0x76cDC81E9dEe818b59Ee0FD198d081D33B47ea87",
-        "why_superseded": "Predates the watchlist and the string-pooling minifier pass."
+        "TokenScope 1.1.0 (build 3)": "0x6debD1f26697eF1E8C0D2b0E82fc7B6bEfd82Ae5",
+        "TokenScope 1.1.0 (build 2)": "0x8F45d757D01db9104cbf535B0Bf241683e385744",
+        "TokenScope 1.1.0 (build 1)": "0xcEC1EC8AEc99776767BeC16672ff4DBE49D95833",
+        "TokenScope 1.0.0": "0xaC6B3575D82825533cA7E35fE8C57c9075b74E95",
+        "TokenScope 1.0.0 (pre-watchlist)": "0x386245fE7e8c28967f84F79eb93532b12cCa9987",
+        "RiskConsumer 1.1.0 (build 3)": "0x9dE92650bf9e784c4d5BbAD3aFC279c131d20D63",
+        "RiskConsumer 1.1.0 (build 2)": "0x7accF644cF30820893F532a8CFD5c8b5cCfb9De8",
+        "RiskConsumer 1.0.0": "0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28",
+        "RiskConsumer (pre-watchlist)": "0x76cDC81E9dEe818b59Ee0FD198d081D33B47ea87",
+        "why_superseded": "Four builds, and each one was fixed because something it did was visible on chain. Build 1 ran the owner probe after the model call rather than before it, and counted batch_scan's 5-address cap before de-duplicating. Build 2 fixed both, and then PEPE came back with src_owner 0 on its first round while the same URL answered 200 by hand seconds later - every 4xx was being read as 'this host has no such endpoint', so a throttle was being recorded as a property of the token. Build 3 classified 401/403/408/425/429 as transient, which is correct and also made rounds fail half the time: ten concurrent POSTs to Blockscout's /api/eth-rpc draw nine 429s, and a consensus round is a burst by construction. Build 4 leads with publicnode, which took the same burst with ten 200s and covers all four chains, and keeps Blockscout as the fallback. A second host is safe here because both read the same chain and the answer is one bit - it changes the odds of getting an answer, never the answer."
       }
     },
     "testnet-bradbury": {
@@ -62,17 +82,17 @@
       "chain_id": "4221",
       "rpc": "https://rpc-bradbury.genlayer.com",
       "explorer": "https://explorer-bradbury.genlayer.com/",
+      "status_2026_09_19": "1.1.0 IS NOT DEPLOYED HERE, AND CANNOT BE. See bradbury_blocker below. The 1.0.0 deployment remains live and readable.",
       "TokenScope": {
         "address": "0xbAAF6f0151D728984445fc42edAC84e13241d4E6",
-        "tx": "0xa94fb9fb2cede757767ae81053cece02516431e785cad947027540be32399923",
-        "artifact": "build/TokenScope.min.py",
-        "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source.",
-        "adds": "watchlist \u2014 add_to_watchlist, remove_from_watchlist, get_watchlist, and max_watchlist in get_config"
+        "rubric_version": "1.0.0",
+        "artifact": "build/TokenScope.min.py at commit e334391 (52,070 bytes, sha256 3706a8a2b40cf55c261d88d47cba3901ff92e9fc01a47f38d2428a3b190a2621)",
+        "fee_note": "fee_wei set to 0 on this demo deployment.",
+        "reading_it_today": "Requires genlayer CLI 0.39.2. Release 0.40.0-rc.3 ships the v0.6 calldata format and fails against it with 'call to private method Contract.__handle_undefined_method__'."
       },
       "RiskConsumer": {
         "address": "0x9DbdC862e5A35AC0126cd47d4B105E679A2Dd9ee",
-        "tx": "0x4228b4758e63e575f77c1d21b51f4ee069ace7bbbda1f27a0abfc908dee9834c",
-        "artifact": "build/RiskConsumer.min.py",
+        "artifact": "build/RiskConsumer.min.py at commit e334391",
         "constructor_args": [
           "0xbAAF6f0151D728984445fc42edAC84e13241d4E6"
         ]
@@ -80,9 +100,19 @@
       "superseded": {
         "TokenScope": "0xA81049c078F84816611b0297C8c4365CAda118a1",
         "RiskConsumer": "0x9d7268Ad83c89bE3d5c494a2558c748CF1BA7Ad2",
-        "why_superseded": "Predates the watchlist. Its scores are still readable, but it has no add_to_watchlist / remove_from_watchlist / get_watchlist, so the app points at the current TokenScope address in this same block."
+        "why_superseded": "Predates the watchlist. This is the pair named in the original accepted submission."
       }
     }
+  },
+  "bradbury_blocker": {
+    "measured_2026_09_19": "Bradbury rejects eth_sendRawTransaction with 'gas limit too high' for any transaction whose gas limit exceeds 16,777,216 - exactly 2**24. Bisected: 16,777,216 deploys, 16,777,217 is refused. The block gas limit is 100,000,000, so this is a PER-TRANSACTION cap, not a block one.",
+    "gas_model": "Deploy gas is linear in source size at ~809.5 gas/byte plus ~240,000 fixed. Measured: 5,000 bytes -> 4,905,669 gas; 15,000 -> 12,573,064; 20,000 -> 16,640,019 (deploys); 21,000 -> 17,406,313 (refused); 50,779 (TokenScope 1.1.0 as measured) -> 40,479,983 (refused); the shipped 51,390-byte artifact projects to ~41.8M.",
+    "ceiling": "~20,170 bytes of contract source.",
+    "not_a_milestone_regression": "The 52,070-byte 1.0.0 artifact that is LIVE on Bradbury right now cannot be redeployed today either. That exact file was pulled from git and tried byte for byte, and was refused identically. A ten-line probe contract deploys fine, so the chain is healthy - the cap is the constraint.",
+    "no_compression_route": "GenVM's ZIP runner layout permits 'stored' only, no deflate (SDK spec, Runners -> Runner Layout -> ZIP Archive), so an archive is larger than the source rather than smaller.",
+    "supersedes": "The 2026-09-02 finding below, which measured a BLOCK PUBDATA ceiling between 53,000 and 53,700 bytes. That ceiling is still what the test suite budgets against, because it is the one that binds on Studionet and the one that will bind again on Bradbury if the gas cap is raised.",
+    "cli_incompatibility": "Separately: genlayer 0.40.0-rc.3 (2026-09-03) cannot talk to old-format Bradbury contracts at all - both reads and deploys fail, with 'runner comment does not start with version, using default v0.1.0' and 'call to private method Contract.__handle_undefined_method__'. 0.39.2 is the last release that speaks the format Bradbury's deployed contracts were built with, and every figure here was measured with it.",
+    "reproduce": "bash tools/deploy_bradbury.sh - it prints the projected gas against the cap before it tries, and says what it expects to happen. Full bisection in docs/PROBE.md section 11."
   },
   "size_finding": {
     "claim": "AuditCourt's notes put the GenVM runner deploy limit at 48 KB.",
@@ -103,7 +133,7 @@
     "listed": "USDT on Bradbury: tier blue_chip, overall 86, rug_level MEDIUM, trade_cap 10000000",
     "revert_proof": "list_token on an unscored token returns [EXPECTED] no score for ethereum:0x514910771af9ca656af840dff83e8264ecf986ca, while preview_listing on the same token degrades to {listable:false, reason:'never scored', badge:'UNSCORED'}"
   },
-  "live_scores": {
+  "live_scores_1_0_0": {
     "network": "testnet-bradbury 0xbAAF6f0151D728984445fc42edAC84e13241d4E6",
     "USDT ethereum": {
       "overall": 86,

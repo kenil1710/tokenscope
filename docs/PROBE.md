@@ -262,3 +262,212 @@ takes one.
 The probe contract is kept in the repository deliberately. It is not part of
 TokenScope and is not deployed with it, but it is the evidence for why the
 contract reads the sources it reads.
+
+---
+
+## 10. A third visit: the endpoint section 1 said did not exist
+
+*Captured 2026-09-19, for the 1.1.0 milestone.*
+
+Section 6 recorded that `/api/v2/smart-contracts/{a}/methods-read` is a **404**
+on every host, and the contract drew a conclusion from it that turned out to be
+too broad: that the *current* owner of a contract is unreadable, and so
+`renounced` could only ever be the ABI inference "does an owner-shaped function
+exist at all".
+
+That conclusion was wrong, and PEPE is what it cost. PEPE has an `owner`
+function **and** has renounced ownership; the inference called it owned, which
+kept `MINTABLE` counting against a contract nobody can mint from.
+
+What the first probe missed is that Blockscout serves **JSON-RPC** alongside
+the REST API, one path segment up from `api/v2/`:
+
+```
+POST https://eth.blockscout.com/api/eth-rpc
+{"jsonrpc":"2.0","id":1,"method":"eth_call",
+ "params":[{"to":"<token>","data":"0x8da5cb5b"},"latest"]}
+```
+
+`0x8da5cb5b` is the `owner()` selector. Measured against four tokens and four
+chains:
+
+| token | chain | response | reading |
+|---|---|---|---|
+| USDT `0xdac1…1ec7` | ethereum | `0x…c6cde7c39eb2f0f0095f41570af89efc2c1ea828` | live owner |
+| PEPE `0x6982…1933` | ethereum | `0x000…000` | **renounced, provably** |
+| LINK `0x5149…86ca` | ethereum | `error code 3, "execution reverted"` | no `owner()` |
+| SHIB `0x95ad…c4ce` | ethereum | `error code 3, "execution reverted"` | no `owner()` |
+| USDT0 `0xfd08…cbb9` | arbitrum | `0x…4dff9b5b0143e642a3f63a5bcf2d1c328e600bf8` | live owner |
+| USDC `0x2791…4174` | polygon | `error code 3, "execution reverted"` | no `owner()` |
+
+### The failure mode this probe *also* found
+
+Base answered one of these attempts with **HTTP 200** and this body:
+
+```json
+{"message":"Too many requests. Increase limits now at https://dev.blockscout.com",
+ "result":null,"status":"0"}
+```
+
+A 200 with neither `result` nor `error`. Read naively as "no owner", that
+throttle would put a **node-dependent bit** straight into the consensus vector:
+one validator gets an address, another gets throttled, and the round cannot
+converge. It is the same class of hazard as section 8's 500s on `/holders`, and
+it gets the same treatment — `[TRANSIENT]`, propagated, the whole request
+refused with a full refund.
+
+So `_owner_features` separates three things that a less careful reading would
+collapse into one:
+
+| response | class | effect on the vector |
+|---|---|---|
+| `result` with an address | answer | `src_owner=1`, `hidden_owner` from the address |
+| `error … "execution reverted"` | answer | `src_owner=1`, `hidden_owner=0`, ABI rule stands |
+| `result: "0x"` (empty return) | answer | same as a revert |
+| 404, 400 | missing document | `src_owner=0`, verification rescales |
+| 401/403/408/425/429, 5xx, throttle body, unparseable | **transient** | `[TRANSIENT]`, request fails, fee refunded |
+
+### The line between those last two, and getting it wrong once
+
+The first version of `_owner_features` read **every** 4xx as a missing
+document. PEPE caught it on the very first demo round: the record came back
+`sources_ok: address,contract,creation,holders,transfers` — no `owner` — on a
+round where a hand-issued POST to the same URL answered 200 with
+`0x000…000` seconds later. Five validators hitting the endpoint at once had
+been throttled, and a throttle had been quietly recorded as a property of the
+token.
+
+So only a status that means the same thing to **every** node may be read as a
+missing document. 404 ("not here") and 400 ("not like that") qualify: every
+node POSTs identical bytes to the same URL. A 401, 403, 408, 425 or 429 is
+this node being refused right now, and is transient, exactly like a 5xx.
+
+### On `latest`
+
+The block tag is `latest`, which is not pinned across validators. That is
+acceptable here and nowhere near as loose as it sounds: the 32-byte word is
+collapsed to **one bit**, and that bit only moves when ownership actually
+transfers. `is_scam`, `is_verified` and `proxy_type` are all read "as of now"
+from the same explorer and are already in the vector on exactly these terms.
+
+---
+
+## 11. The Bradbury deploy ceiling moved — measured 2026-09-19
+
+`deployments.json → size_finding` recorded a **pubdata** ceiling between 53,000
+and 53,700 bytes on 2026-09-02, found by walking into it. As of 2026-09-19 that
+is no longer the binding constraint on Bradbury, and the new one is much lower.
+
+Bradbury now rejects `eth_sendRawTransaction` with **`gas limit too high`** for
+any transaction whose gas limit exceeds **16,777,216 — exactly 2²⁴**. Bisected
+against padded probe contracts:
+
+| tx gas limit | result |
+|---|---|
+| 16,777,216 | deploys |
+| 16,777,217 | `gas limit too high` |
+
+The block gas limit is 100,000,000, so this is a **per-transaction** cap, not a
+block one. Deploy gas is linear in source size at about **809.5 gas per byte**
+plus ~240,000 fixed:
+
+| source bytes | estimated gas | |
+|---|---|---|
+| 5,000 | 4,905,669 | deploys |
+| 15,000 | 12,573,064 | deploys |
+| 20,000 | 16,640,019 | deploys |
+| 21,000 | 17,406,313 | refused |
+| 50,779 (TokenScope 1.1.0, as measured) | 40,479,983 | refused |
+
+**The ceiling is therefore ≈20,170 bytes of contract source.** TokenScope 1.0.0
+— the 52,070-byte artifact currently live on Bradbury at
+`0xbAAF6f0151D728984445fc42edAC84e13241d4E6` — could not be deployed today
+either; this was confirmed by attempting exactly that artifact, byte for byte,
+from git. The blocker is the network, not the milestone.
+
+There is no compression route out of it: GenVM's ZIP runner layout permits
+**`stored` only**, no deflate (SDK spec, *Runners → Runner Layout → ZIP
+Archive*), so an archive is larger than the source, not smaller.
+
+### A second, unrelated Bradbury finding
+
+`genlayer` CLI **0.40.0-rc.3** (published 2026-09-03) cannot talk to
+old-format contracts on Bradbury at all. Both reads and deploys fail:
+
+```
+ValueError: call to private method `Contract.__handle_undefined_method__`
+warn: runner comment does not start with version, using default v0.1.0
+```
+
+That is the v0.6 calldata migration reaching the CLI ahead of the chain.
+**0.39.2** is the last release that speaks the format Bradbury's deployed
+contracts were built with, and every Bradbury figure above was measured with
+it. Reads against the live 1.0.0 deployment work perfectly under 0.39.2 and
+fail under 0.40.0-rc.3 — so a pinned CLI, not a redeploy, is what the existing
+Bradbury contract needs.
+
+### How hard the endpoint throttles, measured
+
+Ten concurrent POSTs from one IP, three times over:
+
+```
+burst 1: 429 429 200 429 429 429 429 429 429 429
+burst 2: 429 429 429 429 429 429 429 429 429 429
+burst 3: 429 429 429 429 429 429 429 429 429 429
+```
+
+Eight *sequential* requests from the same IP all answered 200. So the limiter
+is a burst limiter, and a consensus round is a burst by construction: five
+validators fire the same request at the same instant.
+
+On Studionet that shows up as all-or-nothing. USDT's round got `owner` in
+`sources_ok`; PEPE's, minutes later, got none — and every validator got none,
+which is why the round agreed rather than failing. Validators behind a shared
+egress IP would produce exactly that pattern.
+
+Under the corrected classification a throttled round now **refuses and
+refunds** instead of agreeing on a wrong bit, and a retry a minute later
+works. That is the same trade the contract already makes for Base and
+Polygon's `/holders` 5xx, and it is the right way round: a refusal is
+recoverable, a silently wrong ordinal is not.
+
+### So the probe reads two hosts, in a fixed order
+
+A second host is safe here in a way it would not be for a scored quantity:
+both hosts read the **same chain**, the answer is collapsed to **one bit**, and
+a node that settles on the first and a node that settles on the second produce
+identical vectors. The order is fixed, so every node tries the same host first
+and a round cannot split on *which* host answered.
+
+Finding one with full coverage took some looking. Measured, unauthenticated,
+`eth_call owner()`:
+
+| host | result |
+|---|---|
+| `eth.llamarpc.com` | 525 |
+| `cloudflare-eth.com` | 200 but `-32603 Internal error` on `eth_call` |
+| `rpc.ankr.com/eth` | `-32000 Unauthorized` — needs a key |
+| `polygon-rpc.com` | 401, "API key disabled" |
+| `mainnet.base.org` | 200, correct owner |
+| `arb1.arbitrum.io/rpc` | 200, correct owner |
+| **`*.publicnode.com`** | **200 on all four chains, correct owners** |
+
+Two chains out of four was the bar this had to clear, and the per-chain
+endpoints did not clear it — a fallback that works on Base and Arbitrum but
+not Ethereum and Polygon is not a fallback, it is a second thing to explain.
+publicnode does clear it: `ethereum-rpc`, `base-rpc`, `arbitrum-one-rpc` and
+`polygon-bor-rpc`, one provider, the same answers Blockscout gives.
+
+And critically, **it does not throttle on a burst**. The same ten-concurrent
+test that drew nine 429s from Blockscout drew ten 200s:
+
+```
+publicnode: 200 200 200 200 200 200 200 200 200 200
+```
+
+So publicnode leads and Blockscout's `/api/eth-rpc` backs it up. If the first
+host refuses, the second is tried; if the first has no such endpoint, the
+second is tried; if the first settles, the second is never called. A refusal
+outranks a clean 404 — another node may have got an answer from the host that
+refused us, so the round fails rather than recording a missing source it
+cannot vouch for.

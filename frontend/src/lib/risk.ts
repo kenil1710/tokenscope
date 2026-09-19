@@ -95,64 +95,125 @@ export const RUG_META: Record<RugLevel, { tone: Tone; label: string }> = {
 /**
  * What each rug flag actually means, in the terms a trader cares about.
  *
- * Written as consequences rather than definitions: "the owner can create new
- * supply" is actionable where "mint function present" is trivia.
+ * Three fields, and the third is the one that makes this auditable:
+ *
+ *  - `title`  — the finding, in four words.
+ *  - `detail` — why it matters, written as a CONSEQUENCE rather than a
+ *    definition: "the owner can create new supply" is actionable where "mint
+ *    function present" is trivia.
+ *  - `source` — the document the flag was decided from, and the ordinal it
+ *    reads. Every one of these is a deterministic check over explorer JSON,
+ *    and saying which one lets a reader go and check it. The single exception
+ *    is OWNER_PRIVILEGED_METHODS, which says so.
+ *
+ * The order of this object is the order `_rug_flags` emits, so a list rendered
+ * from it reads the same way the contract wrote it.
  */
-export const FLAG_META: Record<string, { title: string; detail: string }> = {
+export const FLAG_META: Record<
+  string,
+  { title: string; detail: string; source: string }
+> = {
+  EXPLORER_SCAM_FLAG: {
+    title: "Flagged as a scam by the explorer",
+    detail:
+      "Blockscout has designated this token a scam. TokenScope treats this as CRITICAL on its own — no other finding is needed and none can offset it.",
+    source: "is_scam on /addresses/{token}",
+  },
   MINTABLE: {
     title: "Owner can mint",
     detail:
       "The ABI exposes a supply-creating function. Whoever controls it can dilute every holder at will. TokenScope found this by name in the verified ABI, not by guessing.",
+    source: "function names in /smart-contracts/{token}",
   },
   PAUSABLE: {
     title: "Transfers can be frozen",
     detail:
       "A pause or freeze function exists. The owner can stop you selling without stopping themselves.",
+    source: "function names in /smart-contracts/{token}",
   },
   HAS_BLACKLIST: {
     title: "Addresses can be blocked",
     detail:
       "A blacklist, blocklist or fund-seizing function exists. Individual wallets can be prevented from transferring, or drained.",
+    source: "function names in /smart-contracts/{token}",
   },
   UPGRADEABLE_PROXY: {
     title: "Logic can be replaced",
     detail:
       "This is a proxy. The code you audited today can be swapped for different code tomorrow, with no change to the address.",
+    source: "proxy_type / implementations on /addresses/{token}",
   },
-  UNVERIFIED: {
+  HIDDEN_OWNER: {
+    title: "Ownership is not renounced",
+    detail:
+      "owner() answers a live address, so somebody still holds the key. On its own that is centralisation rather than a rug — but it is what turns every finding above into something that can actually be done to you. A renounced contract with a mint function has nobody who can call it.",
+    source: "eth_call owner() via the explorer's JSON-RPC",
+  },
+  UNVERIFIED_SOURCE: {
     title: "Source not verified",
     detail:
-      "No verified source on the explorer, so nobody — including this oracle — can see what the contract actually does.",
+      "No verified source on the explorer, so nobody — including this oracle — can see what the contract actually does. Every ABI-derived finding below is unavailable for this token, which is itself the warning.",
+    source: "is_verified on /addresses/{token}",
+  },
+  LOW_HOLDER_COUNT: {
+    title: "Fewer than 50 holders",
+    detail:
+      "Almost nobody holds this token. There is no distribution to sell into, and the handful of wallets that do hold it can move the price to anything they like.",
+    source: "holders_count on /addresses/{token}",
   },
   VERY_NEW: {
     title: "Deployed within 7 days",
     detail:
       "Too young to have a track record. Most rug pulls happen in the first week.",
+    source: "timestamp of the creation transaction",
   },
-  CONCENTRATED: {
-    title: "Supply is concentrated",
+  CONCENTRATED_SUPPLY: {
+    title: "One wallet holds the majority",
     detail:
-      "One holder controls a large share. A single sell can move the price to zero.",
-  },
-  EXPLORER_SCAM_FLAG: {
-    title: "Flagged as a scam by the explorer",
-    detail:
-      "Blockscout has designated this token a scam. TokenScope treats this as CRITICAL on its own.",
+      "The largest holder controls more than half the supply. A single sell can move the price to zero, and no vote or governance process can outweigh them.",
+    source: "top holder share on /tokens/{token}/holders",
   },
   OWNER_PRIVILEGED_METHODS: {
     title: "Privileged owner functions",
     detail:
       "Functions no keyword table recognised, which a model judged let a privileged account create supply, freeze transfers or seize balances. This is the only model-influenced flag and it cannot raise the level past MEDIUM.",
+    source: "the one model judgement — 15 of 100 verification points",
   },
 };
+
+/** Emission order, so a legend lists flags the way the contract reports them. */
+export const FLAG_ORDER = Object.keys(FLAG_META);
 
 export function flagMeta(flag: string) {
   return (
     FLAG_META[flag] ?? {
       title: flag.replaceAll("_", " ").toLowerCase(),
       detail: "A risk finding reported by the contract.",
+      source: "the contract",
     }
   );
+}
+
+/**
+ * How to draw a risk delta.
+ *
+ * The sign convention is the thing to get right: the score measures SAFETY, so
+ * a positive delta is an improvement and gets the safe tone. Labelling a rise
+ * in a safety score as a rise in risk is the mistake this function exists to
+ * make impossible.
+ */
+export function deltaMeta(delta: number): {
+  tone: Tone;
+  arrow: "up" | "down" | "flat";
+  label: string;
+} {
+  if (delta > 0) {
+    return { tone: "safe", arrow: "up", label: `+${delta} points safer` };
+  }
+  if (delta < 0) {
+    return { tone: "danger", arrow: "down", label: `${delta} points riskier` };
+  }
+  return { tone: "neutral", arrow: "flat", label: "unchanged" };
 }
 
 /** Score → tone. The thresholds match `_badge` in the contract. */

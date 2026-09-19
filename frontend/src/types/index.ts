@@ -60,6 +60,18 @@ export type RiskRecord = {
   scorer: string;
   seq: number;
   rubric_version: string;
+  /** 1-based, stable for the life of the contract. `rescan_token` takes it. */
+  token_id: number;
+  /**
+   * The score this record replaced, frozen at write time.
+   *
+   * `risk_delta` is 0 both when nothing moved and when there was nothing to
+   * move from, so `has_previous` is the field that tells them apart. A UI that
+   * reads the delta alone will report "unchanged" for a first scan.
+   */
+  previous_overall: number;
+  has_previous: boolean;
+  risk_delta: number;
 };
 
 export type NotFound = {
@@ -75,13 +87,18 @@ export type RiskHistory = {
   found: boolean;
   chain: ChainName;
   token_address: string;
+  token_id: number;
   symbol: string;
   update_count: number;
   capacity: number;
   best_overall: number;
   worst_overall: number;
+  /** Across the RETURNED window only — the ring buffer forgets the rest. */
+  window_delta: number;
+  latest_delta: number;
   returned: number;
   scores: RiskRecord[];
+  reason?: string;
 };
 
 export type RiskTrend = {
@@ -112,16 +129,62 @@ export type RugReport = {
     is_proxy: boolean;
     explorer_scam_flag: boolean;
     is_verified: boolean;
+    owner_is_live: boolean;
+    low_holder_count: boolean;
+    top_holder_over_half: boolean;
     owner_privilege_level: number;
   };
   mitigations?: {
-    no_owner_surface: boolean;
+    ownership_renounced: boolean;
     top_holder_is_contract: boolean;
     age_bucket: number;
   };
   abi_available?: boolean;
+  /**
+   * Whether owner() answered at all. When false, `ownership_renounced` is the
+   * 1.0.0 ABI inference rather than a reading, and the UI must not present it
+   * as proof.
+   */
+  owner_probe?: boolean;
+  low_holder_line?: number;
   badge?: Badge;
   scored_at?: number;
+};
+
+/** One row of `batch_scan`: a full record, or a placeholder for an unscored one. */
+export type BatchRow = Partial<RiskRecord> & {
+  chain: ChainName;
+  token_address: string;
+  explorer_url: string;
+  scored: boolean;
+  badge: Badge;
+  rug_level: RugLevel | "UNKNOWN";
+  overall_score: number;
+  rug_flags: string[];
+  flag_count: number;
+  /** Market-cap bucket + 1. 0 for an unscored row, which carries no weight. */
+  weight: number;
+  rank: number;
+};
+
+/** `batch_scan(addresses, chain)` — the portfolio read. */
+export type BatchScan = {
+  chain: ChainName;
+  requested: number;
+  scored: number;
+  unscored: string[];
+  capacity: number;
+  portfolio_score: number;
+  mean_score: number;
+  weighting: string;
+  flagged_tokens: number;
+  high_risk_tokens: number;
+  total_rug_flags: number;
+  worst_rug_level: RugLevel | "UNKNOWN";
+  worst_token: string;
+  coverage_pct: number;
+  tokens: BatchRow[];
+  rubric_version: string;
 };
 
 export type BadgeReport = {
@@ -240,7 +303,7 @@ export type Config = {
   owner: string;
   rubric_version: string;
   quantization_step: number;
-  chains: { chain: ChainName; api: string }[];
+  chains: { chain: ChainName; api: string; rpc: string }[];
   dimensions: Dimension[];
   weights: Record<Dimension, number>;
   confidence_rule: string;

@@ -43,6 +43,37 @@
 # point tables are module constants, not storage. The owner sets the fee within
 # 0..0.1 GEN, pauses new scoring (never reads, never refunds), transfers
 # ownership, and withdraws balance - refunds_owed. Every call is logged.
+#
+# ---------------------------------------------------------------------------
+# MILESTONE 1.1.0. Three additions, all of them subject to everything above.
+#
+# 1. FOUR MORE RUG FLAGS, and one of them closes a hole 1.0.0 documented and
+#    could not fix. The probe recorded that Blockscout's read-methods endpoint
+#    is a 404 and concluded the CURRENT owner was unreadable, so `renounced`
+#    was an ABI guess: does an owner-shaped function exist at all. It missed
+#    that the same host serves JSON-RPC at /api/eth-rpc, where one eth_call of
+#    owner() answers it outright. PEPE is the case that proves it mattered - it
+#    HAS an owner function and HAS renounced, and the guess called it owned.
+#    HIDDEN_OWNER, LOW_HOLDER_COUNT, CONCENTRATED_SUPPLY and UNVERIFIED_SOURCE
+#    join the vector as ordinals, so they are agreed and hashed like the rest;
+#    not one of them asks the model anything.
+#
+# 2. RESCAN AND HISTORY. rescan_token(token_id) re-scores by an integer this
+#    contract issued rather than by an address a human retyped, and every
+#    record now carries the score it replaced, frozen at write time. A delta
+#    computed by reading the ring buffer backwards would quietly change
+#    meaning the moment the buffer lapped.
+#
+# 3. BATCH_SCAN. A portfolio read, deliberately not a portfolio write: one
+#    token's round is six documents and a model call per validator, and single
+#    rounds on Arbitrum already time out. See batch_scan's own docstring.
+#
+# WHAT 1.1.0 CHANGES FOR AN EXISTING SCORE. The vector went from 29 ordinals to
+# 32, so no 1.1.0 content_hash can collide with a 1.0.0 one - the digest is
+# prefixed with the canonical length. Verification now rescales over four
+# availabilities rather than two, and a live owner costs 10 of its points.
+# CONCENTRATED_SUPPLY replaces CONCENTRATED at the 50% line the milestone
+# specifies, while the rug ladder still keys its severe rungs off 75%.
 
 from genlayer import *
 from dataclasses import dataclass
@@ -73,7 +104,8 @@ W_VER = 20
 W_MAT = 15
 W_LIQ = 20
 Q_STEP = 5
-RUBRIC_VERSION = "1.0.0"
+RUBRIC_VERSION = "1.1.0"
+BATCH_MAX = 5                     # addresses per batch_scan call
 
 # --- fetch caps. The anchor and the creation transaction are small; the two
 # list pages are ~100 KB; the contract document carries full source code and is
@@ -87,6 +119,7 @@ CONTRACT_CHARS = 800000
 HOLDERS_CHARS = 120000
 TRANSFERS_CHARS = 200000
 ABI_NAMES_MAX = 24
+RPC_CHARS = 4000
 # Two ceilings, because two very different quantities pass through here.
 # MAX_COUNT bounds plain counts (holders, transfers). MAX_RAW bounds RAW TOKEN
 # UNITS, which are supply times 10**decimals and get enormous: PEPE's total
@@ -108,14 +141,52 @@ RUG_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 HEX_CHARS = "0123456789abcdef"
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
+# --- ownership. `owner()` is the ERC-173 / Ownable selector, and these are the
+# three addresses a project sends ownership to when it renounces. An owner that
+# is any OTHER address is a live key that can still call the dangerous methods.
+OWNER_SELECTOR = "0x8da5cb5b"
+# 4xx is NOT uniformly "this host has no such endpoint". Only a status that
+# means the same thing to every node may be read as a missing document; a host
+# refusing THIS node right now is node-dependent and must fail the round
+# instead. Found by shipping the wrong version of this: PEPE came back with
+# src_owner 0 and no `owner` in sources_ok on a round where a hand-issued
+# request to the same URL answered 200 - a throttle being silently recorded
+# as a property of the token.
+RPC_TRANSIENT_STATUS = (401, 403, 408, 425, 429)
+BURN_ADDRESSES = (ZERO_ADDRESS,
+                  "0x000000000000000000000000000000000000dead",
+                  "0x0000000000000000000000000000000000000001")
+# Below this, a token has not been distributed to anybody yet. Coarse enough
+# to be a bucket boundary, not a measurement: a token sitting exactly on 50
+# holders is the only one two validators can straddle, which is the same
+# margin every other rung in this contract accepts.
+LOW_HOLDER_LINE = 50
+
 # --- chains. One schema, four hosts (docs/PROBE.md section 6). The allowlist is
 # a constant: a chain nobody has probed is a chain whose schema nobody has
 # checked, and an owner should not be able to add one.
+# The third entry is the JSON-RPC host for the owner() probe, and it is FIRST
+# in line rather than a fallback. Blockscout serves JSON-RPC too, at
+# /api/eth-rpc, and that is where the probe started - but its limiter is a
+# BURST limiter and a consensus round is a burst by construction: five
+# validators fire the same request at the same instant. Measured: ten
+# concurrent POSTs from one IP answered 429 nine times, while eight sequential
+# ones all answered 200 (docs/PROBE.md section 10). On Studionet that showed
+# up as whole rounds losing the probe together.
+#
+# publicnode took the same ten-way burst with ten 200s, and covers all four
+# chains with the same answers. So it leads and Blockscout backs it up; a node
+# that settles on either produces the same bit, because both are reading the
+# same chain and the answer is collapsed to one.
 CHAINS = (
-    ("ethereum", "https://eth.blockscout.com/api/v2/"),
-    ("base", "https://base.blockscout.com/api/v2/"),
-    ("arbitrum", "https://arbitrum.blockscout.com/api/v2/"),
-    ("polygon", "https://polygon.blockscout.com/api/v2/"),
+    ("ethereum", "https://eth.blockscout.com/api/v2/",
+     "https://ethereum-rpc.publicnode.com"),
+    ("base", "https://base.blockscout.com/api/v2/",
+     "https://base-rpc.publicnode.com"),
+    ("arbitrum", "https://arbitrum.blockscout.com/api/v2/",
+     "https://arbitrum-one-rpc.publicnode.com"),
+    ("polygon", "https://polygon.blockscout.com/api/v2/",
+     "https://polygon-bor-rpc.publicnode.com"),
 )
 
 # --- ladders. Every rung is a bucket boundary, and bucket width IS the
@@ -160,6 +231,11 @@ VER_METHODS_PTS = (0, 5, 9, 13)
 VER_OWNER_PTS = (15, 8, 0)                   # inverted: 0 residual risk = 15
 VER_LICENSE_PTS = 6
 VER_CERT_PTS = 4
+# Indexed by `hidden_owner`, and only available when the owner probe resolved.
+# A contract whose owner() answers a burn address cannot be steered by anybody;
+# one that answers a live key can be, and that is worth more than any single
+# thing the model is asked.
+VER_OWNER_LIVE_PTS = (10, 0)
 
 MAT_AGE_PTS = (0, 20, 45, 68, 86, 100)
 
@@ -172,14 +248,14 @@ LIQ_SUPPLY_PTS = (0, 4, 8, 12, 15)
 # each ordinal may take. A leader that invents a key, drops one, or reports an
 # out-of-range value is incoherent before any comparison happens.
 FEATURE_RANGE = (
-    ("age", 5), ("blacklist", 1), ("certified", 1), ("hold_ct", 6),
-    ("license", 1), ("mcap", 5), ("methods", 3), ("mintable", 1),
-    ("owner_risk", 2), ("pausable", 1), ("proxy_v", 2), ("renounced", 1),
-    ("scam", 1), ("src_abi", 1), ("src_addr", 1), ("src_created", 1),
-    ("src_holders", 1), ("src_transfers", 1), ("supply_d", 4), ("top1", 6),
-    ("top10", 5), ("top1_ctr", 1), ("uniq", 5), ("upgradeable", 1),
-    ("verified", 2), ("vol24", 5), ("xfer_ct", 5), ("xfer_rate", 3),
-    ("xfer_rec", 4),
+    ("age", 5), ("blacklist", 1), ("certified", 1), ("hidden_owner", 1),
+    ("hold_ct", 6), ("hold_lo", 1), ("license", 1), ("mcap", 5),
+    ("methods", 3), ("mintable", 1), ("owner_risk", 2), ("pausable", 1),
+    ("proxy_v", 2), ("renounced", 1), ("scam", 1), ("src_abi", 1),
+    ("src_addr", 1), ("src_created", 1), ("src_holders", 1), ("src_owner", 1),
+    ("src_transfers", 1), ("supply_d", 4), ("top1", 6), ("top10", 5),
+    ("top1_ctr", 1), ("uniq", 5), ("upgradeable", 1), ("verified", 2),
+    ("vol24", 5), ("xfer_ct", 5), ("xfer_rate", 3), ("xfer_rec", 4),
 )
 
 DIM_KEYS = ("distribution", "activity", "verification", "maturity", "liquidity")
@@ -386,7 +462,14 @@ def _dim_verification(f: dict) -> tuple:
     """The only dimension that draws on two documents, so it is also the only
     one that rescales rather than vanishing when the contract document does not
     resolve. `verified` and `proxy_v` come from the anchor and are therefore
-    always available; the ABI-derived terms are dropped when it does not parse."""
+    always available; the ABI-derived terms are dropped when it does not
+    parse, and the owner-liveness term is dropped when the owner probe did not
+    resolve.
+
+    Availability is therefore 62, 72, 100 or 110 rather than a fixed total, and
+    `_score` rescales against whichever of those applies. That is the same
+    mechanism the dimension already used for the ABI; the owner probe just adds
+    a second document that can independently be present or absent."""
     pts = VER_VERIFIED_PTS[f["verified"]] + VER_PROXY_PTS[f["proxy_v"]]
     avail = 62
     if f["src_abi"]:
@@ -394,7 +477,10 @@ def _dim_verification(f: dict) -> tuple:
                + VER_OWNER_PTS[f["owner_risk"]]
                + (VER_LICENSE_PTS if f["license"] else 0)
                + (VER_CERT_PTS if f["certified"] else 0))
-        avail = 100
+        avail = avail + 38
+    if f["src_owner"]:
+        pts = pts + VER_OWNER_LIVE_PTS[f["hidden_owner"]]
+        avail = avail + 10
     return pts, avail
 
 
@@ -419,7 +505,14 @@ def _dim_liquidity(f: dict) -> tuple:
 def _rug_flags(f: dict) -> list:
     """Every active risk flag, in a fixed order so two nodes that agree on the
     vector produce the same list. Ownership renouncement is NOT here: it is a
-    mitigation, and it is reported separately by check_rug_pull."""
+    mitigation, and it is reported separately by check_rug_pull.
+
+    Each flag is a pure function of ordinals every validator agreed on, so no
+    flag can be asserted by a leader - only derived. HIDDEN_OWNER and
+    LOW_HOLDER_COUNT read ordinals the 1.1.0 vector added; UNVERIFIED_SOURCE
+    and CONCENTRATED_SUPPLY are 1.0.0's UNVERIFIED and CONCENTRATED under the
+    names the milestone specifies, and CONCENTRATED_SUPPLY moved from the 75%
+    rung to the 50% one so it means exactly what it says."""
     out = []
     if f["scam"]:
         out.append("EXPLORER_SCAM_FLAG")
@@ -431,12 +524,16 @@ def _rug_flags(f: dict) -> list:
         out.append("HAS_BLACKLIST")
     if f["upgradeable"]:
         out.append("UPGRADEABLE_PROXY")
+    if f["hidden_owner"]:
+        out.append("HIDDEN_OWNER")
     if f["verified"] == 0:
-        out.append("UNVERIFIED")
+        out.append("UNVERIFIED_SOURCE")
+    if f["hold_lo"]:
+        out.append("LOW_HOLDER_COUNT")
     if f["src_created"] and f["age"] <= 0:
         out.append("VERY_NEW")
-    if f["src_holders"] and f["top1"] <= 1:
-        out.append("CONCENTRATED")
+    if f["src_holders"] and f["top1"] <= 2:
+        out.append("CONCENTRATED_SUPPLY")
     if f["owner_risk"] >= 2:
         out.append("OWNER_PRIVILEGED_METHODS")
     return out
@@ -448,20 +545,40 @@ def _rug_level(f: dict, flags: list) -> str:
 
     Minting is only counted against a token whose owner still exists: a mint
     function on a contract whose ownership has been renounced cannot be called
-    by anybody, which is exactly what renouncing is for."""
+    by anybody, which is exactly what renouncing is for. In 1.0.0 `renounced`
+    was an ABI guess - does an owner-shaped function exist at all - because
+    Blockscout's read-methods endpoint is a 404. 1.1.0 reads owner() itself
+    through the explorer's JSON-RPC, so this test is now a fact.
+
+    A live owner escalates in PROPORTION to how unestablished the token is.
+    That distinction is the whole reason USDT is not a rug: its owner really
+    can mint and really can freeze, but it is verified, eight years old, held
+    by millions and not concentrated, so `weak` is false and the live key stays
+    a MEDIUM centralisation finding rather than a rug warning. On a two-day-old
+    token with forty holders and 80% in one wallet, the same key is the rug."""
     if f["scam"]:
         return "CRITICAL"
+    live = bool(f["hidden_owner"])
     mint = bool(f["mintable"]) and not f["renounced"]
     unver = f["verified"] == 0
     new = bool(f["src_created"]) and f["age"] <= 0
     conc = bool(f["src_holders"]) and f["top1"] <= 1
+    conc50 = bool(f["src_holders"]) and f["top1"] <= 2
+    thin = bool(f["hold_lo"])
+    weak = conc50 or thin or new or unver
     if mint and unver and new and conc:
+        return "CRITICAL"
+    if live and mint and conc50 and thin:
         return "CRITICAL"
     if (mint and conc) or (unver and new) or (mint and unver):
         return "HIGH"
+    if live and mint and weak:
+        return "HIGH"
+    if live and (f["pausable"] or f["blacklist"]) and thin:
+        return "HIGH"
     if f["pausable"] or f["upgradeable"] or f["blacklist"]:
         return "MEDIUM"
-    if f["owner_risk"] >= 2:
+    if f["owner_risk"] >= 2 or (live and mint) or conc50 or thin:
         return "MEDIUM"
     if len(flags) == 0:
         return "NONE"
@@ -522,7 +639,7 @@ def _sources(f: dict) -> str:
     out = []
     for key, label in (("src_addr", "address"), ("src_abi", "contract"),
                        ("src_created", "creation"), ("src_holders", "holders"),
-                       ("src_transfers", "transfers")):
+                       ("src_owner", "owner"), ("src_transfers", "transfers")):
         if int(f.get(key, 0)):
             out.append(label)
     return ",".join(out)
@@ -602,9 +719,16 @@ def _agrees(lead: typing.Any, mine: typing.Any) -> bool:
 # rule is positive - a shape this contract can fetch - rather than a blocklist.
 
 def _chain_base(name: str) -> str:
-    for n, base in CHAINS:
+    for n, base, _rpc in CHAINS:
         if n == name:
             return base
+    return ""
+
+
+def _chain_rpc(name: str) -> str:
+    for n, _base, rpc in CHAINS:
+        if n == name:
+            return rpc
     return ""
 
 
@@ -620,7 +744,7 @@ def _norm_chain(chain: str) -> str:
     if _chain_base(c) == "":
         raise gl.vm.UserError(
             ERR_EXPECTED + " unsupported chain '" + _short(c, 24)
-            + "'; supported: " + ",".join([n for n, _b in CHAINS]))
+            + "'; supported: " + ",".join([n for n, _b, _r in CHAINS]))
     return c
 
 
@@ -745,6 +869,11 @@ def _anchor_features(doc: dict, f: dict) -> tuple:
 
     holders = _num(tok.get("holders_count"))
     f["hold_ct"] = _rank(holders, HOLDERS_LADDER)
+    # Only asserted when the anchor actually reported a count. A chain that
+    # omits holders_count parses as 0, and "nobody holds it" and "nobody said"
+    # are not the same claim - so an absent count leaves the flag off rather
+    # than accusing every token on a quiet explorer of having no holders.
+    f["hold_lo"] = 1 if 0 < holders < LOW_HOLDER_LINE else 0
     f["mcap"] = _rank(_num(tok.get("circulating_market_cap")), MCAP_LADDER)
     f["vol24"] = _rank(_num(tok.get("volume_24h")), VOL_LADDER)
 
@@ -836,6 +965,144 @@ def _abi_features(doc: dict, f: dict) -> list:
 
     f["src_abi"] = 1
     return residual[:ABI_NAMES_MAX]
+
+
+def _rpc_url(base: str) -> str:
+    """Blockscout serves JSON-RPC beside the REST API, one path segment up:
+    `.../api/v2/` is the REST base, `.../api/eth-rpc` is the RPC one."""
+    return _strip(base, "v2/") + "eth-rpc"
+
+
+def _owner_features(chain: str, base: str, token: str, f: dict) -> None:
+    """Read owner() and settle the one question 1.0.0 could not answer.
+
+    docs/PROBE.md section 6 recorded that `/smart-contracts/{a}/methods-read`
+    is a 404 on every host, and 1.0.0 concluded from that that the CURRENT
+    owner was unreadable - so `renounced` was downgraded to an ABI guess: does
+    an owner-shaped function exist at all. That guess is wrong in the direction
+    that matters. PEPE has an `owner` function AND has renounced; the guess
+    called it owned, which kept MINTABLE counting against a contract nobody can
+    mint from.
+
+    The probe missed that Blockscout also serves JSON-RPC at `/api/eth-rpc`,
+    where eth_call works. One POST answers it exactly:
+
+      owner() -> 0x00..00 / 0x..dead   ownership renounced, provably
+      owner() -> any other address     a live key: HIDDEN_OWNER
+      execution reverted               no owner(); the ABI rule stands
+
+    THREE failure classes, and the line between two of them is where this got
+    it wrong once already.
+
+    TRANSIENT, propagated, round fails, fee refunded: a 5xx, a throttle status
+    (RPC_TRANSIENT_STATUS), and a 200 whose body carries neither `result` nor
+    `error` - Blockscout's way of saying "too many requests". All three are
+    this NODE being refused right now, and a node that got 429 while another
+    got an address would put different bits in the consensus vector.
+
+    MISSING DOCUMENT, `src_owner` stays 0 and verification rescales exactly as
+    a missing ABI does: 404 and 400. Every node POSTs identical bytes to the
+    same URL, so both mean the same thing to all of them.
+
+    The first version of this read EVERY 4xx as a missing document, and PEPE
+    caught it: it came back with `src_owner` 0 on a round where the same URL
+    answered 200 by hand moments later. A throttle had been recorded as a
+    property of the token.
+
+    And an ANSWER, not a failure: a clean `execution reverted`, or an empty
+    return. That is how a contract says it has no owner() - so it sets
+    src_owner and leaves hidden_owner at 0.
+
+    `latest` is the block tag, and it is the coarsest read in the contract: a
+    32-byte word collapsed to one bit that only moves when ownership actually
+    transfers. is_scam, is_verified and proxy_type are all read "as of now"
+    from the same explorer and are already in the vector on the same terms."""
+    urls = (_chain_rpc(chain), _rpc_url(base))
+    held = None
+    for i in range(len(urls)):
+        url = urls[i]
+        if url == "":
+            continue
+        try:
+            if _owner_at(url, token, f):
+                return
+        except gl.vm.UserError as e:
+            # This host refused THIS node. The other one may not have, and a
+            # node that settles on either produces the same bit - so try it
+            # before giving up on the round.
+            held = e
+    # Nothing settled. A refusal outranks a clean "no such endpoint": another
+    # node may have got an answer from the host that refused us, so the round
+    # must fail rather than record a missing source it cannot vouch for.
+    if held is not None:
+        raise held
+
+
+def _owner_at(url: str, token: str, f: dict) -> bool:
+    """One eth_call against one host.
+
+    True when the question is SETTLED and `f` has been written, False when
+    this host simply does not serve the endpoint, and raises on a transient
+    refusal. `f` is written only once the answer is known, so a host that
+    starts answering and then turns out to be broken leaves no trace."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                       "params": [{"to": token, "data": OWNER_SELECTOR},
+                                  "latest"]})
+    res = gl.nondet.web.request(
+        url, method="POST", body=body,
+        headers={"Content-Type": "application/json"})
+    st = _status(res)
+    # A throttle, a gateway refusal or a timeout is this node's bad minute.
+    if st >= 500 or st in RPC_TRANSIENT_STATUS:
+        raise gl.vm.UserError(ERR_TRANSIENT + " rpc http " + str(st))
+    # 400 and 404 are the endpoint saying "not like that" and "not here", and
+    # every node POSTs identical bytes to the same URL - so both are the same
+    # answer for everybody, and the dimension rescales rather than failing.
+    if st >= 400:
+        return False
+    try:
+        doc = json.loads(_body(res)[:RPC_CHARS])
+    except ValueError:
+        raise gl.vm.UserError(ERR_TRANSIENT + " rpc unparseable json")
+    if not isinstance(doc, dict):
+        raise gl.vm.UserError(ERR_TRANSIENT + " rpc unexpected json shape")
+    if "error" in doc:
+        err = doc.get("error")
+        detail = ""
+        if isinstance(err, dict):
+            detail = str(err.get("message", "") or "").lower()
+        if detail.find("revert") < 0:
+            raise gl.vm.UserError(ERR_TRANSIENT + " rpc error: "
+                                  + _short(detail, 40))
+        f["src_owner"] = 1
+        return True
+    raw = doc.get("result")
+    if not isinstance(raw, str):
+        # Blockscout answers a throttle with HTTP 200 and a body carrying
+        # neither `result` nor `error`. That is the host, not the token.
+        raise gl.vm.UserError(ERR_TRANSIENT + " rpc gave no result")
+    word = _flat(raw).lower()
+    if word.startswith("0x"):
+        word = word[2:]
+    # A short word is an empty return: the selector matched nothing callable,
+    # which is the same answer as a revert.
+    if len(word) < 40:
+        f["src_owner"] = 1
+        return True
+    for ch in word:
+        if ch not in HEX_CHARS:
+            raise gl.vm.UserError(ERR_TRANSIENT + " rpc result is not hex")
+    addr = "0x" + word[len(word) - 40:]
+    f["src_owner"] = 1
+    if addr in BURN_ADDRESSES:
+        # Positive proof, and it overrides the ABI guess in the safe direction.
+        f["renounced"] = 1
+        return True
+    f["hidden_owner"] = 1
+    # Equally positive in the other direction: there IS a live owner, whatever
+    # the ABI surface suggested.
+    f["renounced"] = 0
+    return True
 
 
 def _created_features(doc: dict, now: int, f: dict) -> bool:
@@ -1089,6 +1356,12 @@ def _collect(task: dict) -> dict:
     if contract_doc is not None:
         residual = _abi_features(contract_doc, f)
 
+    # After the ABI, because a burn-address owner() overrides the ABI's guess
+    # at `renounced` and a live one overrides it the other way - and BEFORE the
+    # model, because this call can fail the whole round on a throttle and a
+    # model call paid for first would be paid for nothing.
+    _owner_features(chain, base, token, f)
+
     if f["src_abi"]:
         f["owner_risk"] = _owner_risk(residual)
 
@@ -1176,6 +1449,14 @@ class RiskScore:
     scored_at: u64
     scorer: Address
     seq: u32
+    # The score this one replaced, carried on the record rather than looked up.
+    # A ring buffer that has lapped no longer HAS the previous record to
+    # subtract, so a delta computed by reading history backwards silently
+    # becomes a delta against whatever survived. Frozen at write time it stays
+    # true for the life of the record. prev_seq 0 means there was no previous
+    # score, which is not the same as a delta of zero.
+    prev_overall: u32
+    prev_seq: u32
 
 
 @allow_storage
@@ -1255,6 +1536,10 @@ class TokenScope(gl.Contract):
     tokens: DynArray[str]
     token_seen: TreeMap[str, bool]
     id_index: TreeMap[str, str]
+    # key -> token_id. The id is the 1-based position in `tokens`, assigned on
+    # first sight and never reused: `tokens` is append-only, so an id is stable
+    # for the life of the contract even as the score ring buffer laps.
+    token_ids: TreeMap[str, u32]
 
     boards: TreeMap[str, ChainBoard]
     chain_count: TreeMap[str, u32]
@@ -1365,6 +1650,17 @@ class TokenScope(gl.Contract):
                 return key, rec
         return key, None
 
+    def _key_by_id(self, token_id: int) -> str:
+        """token_id -> "chain:address", or "" when no such token is tracked."""
+        i = int(token_id)
+        if i < 1 or i > len(self.tokens):
+            return ""
+        return str(self.tokens[i - 1])
+
+    def _split(self, key: str) -> tuple:
+        parts = key.split(":")
+        return parts[0], parts[1]
+
     def _missing(self, score_id: int, key: str) -> dict:
         return {"found": False, "score_id": int(score_id), "key": key,
                 "reason": ("history window has since rolled over" if key
@@ -1413,6 +1709,13 @@ class TokenScope(gl.Contract):
             "age_seconds": age,
             "scorer": rec.scorer.as_hex,
             "seq": int(rec.seq),
+            "token_id": int(self.token_ids.get(_key(str(rec.chain),
+                                                    str(rec.token))) or 0),
+            "previous_overall": int(rec.prev_overall),
+            "has_previous": int(rec.prev_seq) > 0,
+            # 0 with has_previous false means "first scan", not "unchanged".
+            "risk_delta": (int(rec.overall_score) - int(rec.prev_overall)
+                           if int(rec.prev_seq) > 0 else 0),
             "rubric_version": RUBRIC_VERSION,
         }
 
@@ -1487,17 +1790,39 @@ class TokenScope(gl.Contract):
         Returns a status object; it does not raise once value is attached. Every
         refusal credits the full amount back to the sender, claimable with
         claim_refund()."""
-        value = int(gl.message.value)
-        sender = gl.message.sender_address
-        now = self._now()
-
         try:
             ch = _norm_chain(chain)
             token = _norm_token(token_address)
         except gl.vm.UserError as e:
             msg = getattr(e, "message", "")
             return self._reject(str(msg) if msg else str(e))
+        return self._scan(ch, token)
 
+    @gl.public.write.payable
+    def rescan_token(self, token_id: int) -> typing.Any:
+        """Re-score a token this contract has already seen, by its token_id.
+
+        The same consensus round, the same fee, the same cooldown - the ONLY
+        difference from request_risk is how the token is named. That matters
+        for a re-scan specifically: a caller who has to retype an address to
+        refresh it can retype it wrong, and a fresh score written against a
+        near-miss address is a new feed, not an update. An integer that the
+        contract itself issued cannot be a near miss.
+
+        It resolves and then delegates, so there is exactly one scoring path in
+        this contract and a re-scan cannot drift from a first scan."""
+        key = self._key_by_id(token_id)
+        if key == "":
+            return self._reject("no such token_id: " + str(int(token_id))
+                                + "; get_tracked_tokens lists them")
+        ch, token = self._split(key)
+        return self._scan(ch, token)
+
+    def _scan(self, ch: str, token: str) -> typing.Any:
+        """THE scoring path. request_risk and rescan_token both end up here."""
+        value = int(gl.message.value)
+        sender = gl.message.sender_address
+        now = self._now()
         key = _key(ch, token)
         if self.paused:
             return self._reject("paused; reads and refunds still work")
@@ -1571,6 +1896,7 @@ class TokenScope(gl.Contract):
             feed.worst_overall = u32(100)
             self.tokens.append(key)
             self.token_seen[key] = True
+            self.token_ids[key] = u32(len(self.tokens))
             self.chain_count[ch] = u32(int(self.chain_count.get(ch) or 0) + 1)
         feed.symbol = symbol
         feed.name = name
@@ -1578,6 +1904,16 @@ class TokenScope(gl.Contract):
         score_id = int(self.next_id)
         seq = int(feed.update_count) + 1
         cap = self._cap(feed)
+        # Read BEFORE the slot is chosen: once the ring buffer is full the slot
+        # about to be written is the OLDEST one, and `_latest` would still be
+        # correct here but only by accident. Copied out as plain ints so
+        # nothing below can read a half-overwritten record.
+        prev_overall = 0
+        prev_seq = 0
+        if len(feed.history) > 0:
+            previous = self._latest(feed)
+            prev_overall = int(previous.overall_score)
+            prev_seq = int(previous.seq)
         if len(feed.history) < cap:
             rec = feed.history.append_new_get()
         else:
@@ -1603,6 +1939,8 @@ class TokenScope(gl.Contract):
         rec.scored_at = u64(now)
         rec.scorer = sender
         rec.seq = u32(seq)
+        rec.prev_overall = u32(prev_overall)
+        rec.prev_seq = u32(prev_seq)
 
         feed.cursor = u32((int(feed.cursor) + 1) % cap)
         feed.update_count = u32(seq)
@@ -1658,14 +1996,13 @@ class TokenScope(gl.Contract):
             return self._missing(score_id, key)
         return self._view(rec, self._now())
 
-    @gl.public.view
-    def get_risk_history(self, token_address: str, chain: str,
-                         count: int) -> typing.Any:
-        ch, token = self._pair(token_address, chain)
+    def _history(self, ch: str, token: str, count: int) -> dict:
+        """Newest first, with each record's own frozen delta beside it."""
         key = _key(ch, token)
         if key not in self.feeds:
             return {"found": False, "chain": ch, "token_address": token,
-                    "scores": []}
+                    "token_id": int(self.token_ids.get(key) or 0),
+                    "returned": 0, "scores": []}
         feed = self.feeds[key]
         n = int(count)
         if n <= 0 or n > HISTORY_CAP:
@@ -1674,18 +2011,50 @@ class TokenScope(gl.Contract):
         out = []
         for rec in self._ordered(feed)[:n]:
             out.append(self._view(rec, now))
+        window = 0
+        if len(out) > 1:
+            window = (int(out[0]["overall_score"])
+                      - int(out[len(out) - 1]["overall_score"]))
         return {
             "found": len(out) > 0,
             "chain": ch,
             "token_address": token,
+            "token_id": int(self.token_ids.get(key) or 0),
             "symbol": str(feed.symbol),
             "update_count": int(feed.update_count),
             "capacity": self._cap(feed),
             "best_overall": int(feed.best_overall),
             "worst_overall": int(feed.worst_overall),
+            # Across the RETURNED window, which is at most `capacity` scans -
+            # not across the token's whole life, which the ring buffer no
+            # longer remembers. best/worst_overall are the lifetime figures.
+            "window_delta": window,
+            "latest_delta": int(out[0]["risk_delta"]) if out else 0,
             "returned": len(out),
             "scores": out,
         }
+
+    @gl.public.view
+    def get_risk_history(self, token_id: int) -> typing.Any:
+        """Every retained score for a tracked token, newest first.
+
+        Addressed by token_id rather than by address: this is the read that
+        pairs with rescan_token, and the two should not disagree about which
+        token they mean. get_history_by_address is the same data for a caller
+        who only has an address."""
+        key = self._key_by_id(token_id)
+        if key == "":
+            return {"found": False, "token_id": int(token_id), "returned": 0,
+                    "scores": [],
+                    "reason": "no such token_id; get_tracked_tokens lists them"}
+        ch, token = self._split(key)
+        return self._history(ch, token, HISTORY_CAP)
+
+    @gl.public.view
+    def get_history_by_address(self, token_address: str, chain: str,
+                               count: int) -> typing.Any:
+        ch, token = self._pair(token_address, chain)
+        return self._history(ch, token, count)
 
     @gl.public.view
     def get_risk_trend(self, token_address: str, chain: str) -> typing.Any:
@@ -1808,12 +2177,17 @@ class TokenScope(gl.Contract):
         """The rug findings on their own, with the mitigations reported beside
         them rather than folded into a number.
 
-        `no_owner_surface` is stated for exactly what it is: Blockscout exposes
-        no way to read a contract's CURRENT owner - its read-methods endpoint is
-        a 404 - so this does not claim to know that ownership was renounced. It
-        reports the checkable fact that the ABI has no owner, admin, governance
-        or authority function, and therefore nobody who can call the dangerous
-        ones."""
+        In 1.0.0 `no_owner_surface` carried a caveat: Blockscout's read-methods
+        endpoint is a 404, so the contract could not read a CURRENT owner and
+        reported only whether the ABI had an owner-shaped function at all.
+        1.1.0 reads owner() over the explorer's JSON-RPC, so `owner_is_live` is
+        now a fact rather than an inference, and `ownership_renounced` is only
+        true when owner() actually answered a burn address.
+
+        `owner_probe` says which of those two the reader is looking at. When it
+        is false the endpoint did not answer and the 1.0.0 caveat still
+        applies - so the caveat is reported per-record instead of standing
+        permanently."""
         ch, token = self._pair(token_address, chain)
         rec = self._find(ch, token)
         if rec is None:
@@ -1838,12 +2212,18 @@ class TokenScope(gl.Contract):
                 "is_proxy": bool(get("upgradeable", 0)),
                 "explorer_scam_flag": bool(get("scam", 0)),
                 "is_verified": int(get("verified", 0)) > 0,
+                "owner_is_live": bool(get("hidden_owner", 0)),
+                "low_holder_count": bool(get("hold_lo", 0)),
+                "top_holder_over_half": bool(get("src_holders", 0))
+                                        and int(get("top1", 6)) <= 2,
                 "owner_privilege_level": int(get("owner_risk", 0))},
             "mitigations": {
-                "no_owner_surface": bool(get("renounced", 0)),
+                "ownership_renounced": bool(get("renounced", 0)),
                 "top_holder_is_contract": bool(get("top1_ctr", 0)),
                 "age_bucket": int(get("age", 0))},
             "abi_available": bool(get("src_abi", 0)),
+            "owner_probe": bool(get("src_owner", 0)),
+            "low_holder_line": LOW_HOLDER_LINE,
             "badge": str(rec.badge),
             "scored_at": int(rec.scored_at),
         }
@@ -1901,6 +2281,146 @@ class TokenScope(gl.Contract):
             "b": vb,
             "dimensions": dims,
             "overall_delta": oa - ob,
+        }
+
+    @gl.public.view
+    def batch_scan(self, addresses: typing.Any, chain: str) -> typing.Any:
+        """Score a whole portfolio against the oracle in one call: up to
+        BATCH_MAX addresses on one chain, sorted riskiest first, with the
+        aggregate figures a holder actually wants.
+
+        THIS IS A READ, AND THAT IS THE DESIGN, NOT A SHORTCUT. Scoring one
+        token is five HTTP documents, one or two JSON-RPC calls and one model
+        call inside a single leader execution, and every validator repeats all
+        of it. Five tokens is thirty-odd fetches in one round. The single-token round
+        for USDT0 on Arbitrum ALREADY came back LEADER_TIMEOUT several times
+        before it settled, because that chain's /holders page takes ~7.5s on
+        its own (deployments.json, live_scores). A five-token round would not
+        be a bolder feature, it would be a round that never settles - and a
+        round that never settles writes nothing, so the portfolio would come
+        back empty after paying five fees.
+
+        So the split is: request_risk and rescan_token buy consensus, one
+        token per transaction; batch_scan reads what consensus already agreed
+        and does the arithmetic across it. `unscored` names the addresses the
+        caller still needs to scan, which is what makes the portfolio page a
+        loop rather than a guess.
+
+        Free, like every other read, and callable by another contract.
+
+        The weighted score is weighted by MARKET-CAP BUCKET, because a pasted
+        list of addresses carries no balances. Equal weighting would let a
+        dust-sized token drag a portfolio's headline down as hard as its
+        largest holding; `mcap` is already an agreed ordinal, so weighting by
+        it costs nothing and cannot be forged. `mean_score` is reported beside
+        it so the weighting is never the only number on offer."""
+        ch = _norm_chain(chain)
+        raw = addresses
+        # A comma-separated string is accepted as well as a list: the genlayer
+        # CLI cannot easily send an array, and a portfolio nobody can call
+        # from the command line is a portfolio nobody can demonstrate.
+        if isinstance(raw, str):
+            raw = raw.split(",")
+        if not isinstance(raw, list):
+            raise gl.vm.UserError(ERR_EXPECTED + " addresses must be a list "
+                                  "or a comma-separated string")
+        wanted = []
+        seen = {}
+        for item in raw:
+            text = _flat(str(item))
+            if text == "":
+                continue
+            token = _norm_token(text)
+            # A duplicate is a paste slip, not a second holding, and counting
+            # it twice would move every aggregate below.
+            if token in seen:
+                continue
+            # Counted AFTER the duplicate check, and that ordering is the whole
+            # point: six pasted lines of which two are the same token are five
+            # tokens, and refusing them would be refusing a portfolio that fits.
+            if len(wanted) >= BATCH_MAX:
+                raise gl.vm.UserError(ERR_EXPECTED + " at most "
+                                      + str(BATCH_MAX) + " addresses")
+            seen[token] = True
+            wanted.append(token)
+        if len(wanted) == 0:
+            raise gl.vm.UserError(ERR_EXPECTED + " no addresses given")
+
+        now = self._now()
+        rows = []
+        unscored = []
+        flagged = 0
+        high_risk = 0
+        total_flags = 0
+        weighted = 0
+        weights = 0
+        plain = 0
+        worst = -1
+        worst_token = ""
+        for token in wanted:
+            rec = self._find(ch, token)
+            if rec is None:
+                unscored.append(token)
+                rows.append({
+                    "chain": ch, "token_address": token, "scored": False,
+                    "badge": "UNSCORED", "rug_level": "UNKNOWN",
+                    "overall_score": 0, "rug_flags": [], "flag_count": 0,
+                    "weight": 0,
+                    "explorer_url": _explorer_url(ch, token)})
+                continue
+            row = self._view(rec, now)
+            row["scored"] = True
+            flags = row["rug_flags"]
+            row["flag_count"] = len(flags)
+            total_flags = total_flags + len(flags)
+            if len(flags) > 0:
+                flagged = flagged + 1
+            rank = RUG_RANK.get(str(rec.rug_level), 4)
+            if rank >= RUG_RANK["HIGH"]:
+                high_risk = high_risk + 1
+            if rank > worst:
+                worst = rank
+                worst_token = token
+            try:
+                feats = json.loads(str(rec.evidence))
+            except ValueError:
+                feats = {}
+            weight = int(feats.get("mcap", 0) or 0) + 1
+            row["weight"] = weight
+            overall = int(rec.overall_score)
+            weighted = weighted + overall * weight
+            weights = weights + weight
+            plain = plain + overall
+            rows.append(row)
+
+        scored = len(wanted) - len(unscored)
+        # Riskiest first: lowest overall, and a worse rug level breaks a tie.
+        # Unscored rows sort to the front on purpose - an address nobody has
+        # checked is the one the holder should look at first.
+        rows.sort(key=lambda r: (1 if r["scored"] else 0,
+                                 int(r["overall_score"]),
+                                 -RUG_RANK.get(str(r["rug_level"]), 4)))
+        for i in range(len(rows)):
+            rows[i]["rank"] = i + 1
+        return {
+            "chain": ch,
+            "requested": len(wanted),
+            "scored": scored,
+            "unscored": unscored,
+            "capacity": BATCH_MAX,
+            "portfolio_score": weighted // weights if weights else 0,
+            "mean_score": plain // scored if scored else 0,
+            "weighting": "market-cap bucket (mcap ordinal + 1)",
+            "flagged_tokens": flagged,
+            "high_risk_tokens": high_risk,
+            "total_rug_flags": total_flags,
+            "worst_rug_level": (["NONE", "LOW", "MEDIUM", "HIGH",
+                                 "CRITICAL"][worst] if worst >= 0
+                                else "UNKNOWN"),
+            "worst_token": worst_token,
+            "coverage_pct": scored * 100 // len(wanted),
+            "tokens": rows,
+            "rubric_version": RUBRIC_VERSION,
         }
 
     def _leaderboard(self, chain: str, count: int, safest: bool) -> dict:
@@ -2026,7 +2546,7 @@ class TokenScope(gl.Contract):
     def get_stats(self) -> typing.Any:
         n = int(self.total_scored)
         per_chain = []
-        for name, _b in CHAINS:
+        for name, _b, _r in CHAINS:
             per_chain.append({
                 "chain": name,
                 "tokens_tracked": int(self.chain_count.get(name) or 0),
@@ -2063,7 +2583,8 @@ class TokenScope(gl.Contract):
             "owner": self.owner.as_hex,
             "rubric_version": RUBRIC_VERSION,
             "quantization_step": Q_STEP,
-            "chains": [{"chain": n, "api": b} for n, b in CHAINS],
+            "chains": [{"chain": n, "api": b, "rpc": r}
+                       for n, b, r in CHAINS],
             "dimensions": list(DIM_KEYS),
             "weights": {"distribution": W_DIST, "activity": W_ACT,
                         "verification": W_VER, "maturity": W_MAT,
@@ -2073,6 +2594,18 @@ class TokenScope(gl.Contract):
             "rug_levels": ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"],
             "badges": ["VERIFIED_SAFE", "MODERATE_RISK", "HIGH_RISK",
                        "RUG_WARNING", "UNSCORED"],
+            # The full flag vocabulary, so a caller can render every flag it
+            # might ever see rather than only the ones a token happened to
+            # raise. In the emission order _rug_flags uses.
+            "rug_flag_names": ["EXPLORER_SCAM_FLAG", "MINTABLE", "PAUSABLE",
+                               "HAS_BLACKLIST", "UPGRADEABLE_PROXY",
+                               "HIDDEN_OWNER", "UNVERIFIED_SOURCE",
+                               "LOW_HOLDER_COUNT", "VERY_NEW",
+                               "CONCENTRATED_SUPPLY",
+                               "OWNER_PRIVILEGED_METHODS"],
+            "low_holder_line": LOW_HOLDER_LINE,
+            "batch_max": BATCH_MAX,
+            "owner_selector": OWNER_SELECTOR,
             "rate_limit_seconds": RATE_LIMIT_SECONDS,
             "token_cooldown_seconds": TOKEN_COOLDOWN,
             "history_cap": HISTORY_CAP,

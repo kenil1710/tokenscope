@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import { AppHeader } from "@/components/AppHeader";
 import { Footer } from "@/components/Footer";
-import { PortfolioView } from "@/components/PortfolioView";
+import { PortfolioTabs } from "@/components/PortfolioTabs";
 
 export const metadata: Metadata = {
   title: "Scan a portfolio",
   description:
-    "Point TokenScope at any wallet and see every ERC-20 it holds rated against the oracle's on-chain registry — with the value sitting in tokens that carry a rug finding.",
+    "Paste up to five token addresses and read the portfolio's aggregate risk straight off the contract, or point TokenScope at any wallet and see every ERC-20 it holds rated against the oracle's registry.",
 };
 
 export default function PortfolioPage() {
@@ -17,12 +17,14 @@ export default function PortfolioPage() {
         <header className="mb-8">
           <h1 className="text-3xl font-semibold tracking-tight text-ink-900">Portfolio</h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-ink-600">
-            Every ERC-20 a wallet holds, joined to what the oracle already knows about
-            those tokens. Balances are public data and no wallet connection is required
-            — you can point this at an address you do not control.
+            Paste up to five token addresses and the contract returns the
+            portfolio&rsquo;s weighted risk score, its flagged tokens and every
+            rug finding across them — computed on-chain, in one read. Or point
+            it at a wallet: balances are public data and no connection is
+            required, so you can inspect an address you do not control.
           </p>
         </header>
-        <PortfolioView />
+        <PortfolioTabs />
       </main>
       <Footer />
     </div>
