@@ -264,14 +264,22 @@ genlayer call ${CONTRACT_ADDRESS} get_risk \\
 genlayer call ${CONTRACT_ADDRESS} verify_risk --args 1
 genlayer call ${CONTRACT_ADDRESS} get_watchlist --args 0xYourAddress
 
+# Writes need a fee, and --fee-value ALONE is not enough: without the
+# distribution object the transaction reverts with FeeValueMustBeNonZero(1).
+FEES=$(genlayer estimate-fees --json | tail -1)
+DIST=$(python3 -c "import json,sys;print(json.dumps({'distribution':json.loads(sys.argv[1])['distribution']}))" "$FEES")
+FEE=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['feeValue'])" "$FEES")
+
 genlayer write ${CONTRACT_ADDRESS} add_to_watchlist \\
-  --args 0xdAC17F958D2ee523a2206206994597C13D831ec7 ethereum
+  --args 0xdAC17F958D2ee523a2206206994597C13D831ec7 ethereum \\
+  --fees "$DIST" --fee-value "$FEE"
 
 # Confirm the deployed source is the artifact in this repository.
 genlayer code ${CONTRACT_ADDRESS} | diff - build/TokenScope.min.py`;
 
 const PY_CONSUMER = `# Calling TokenScope from another Intelligent Contract.
-@gl.contract_interface
+# v0.6 dialect — gl.contract.interface, not the old gl.contract_interface.
+@gl.contract.interface
 class ITokenScope:
     class View:
         def is_safe(self, token: str, chain: str, min_score: int) -> bool: ...
@@ -282,7 +290,7 @@ class ITokenScope:
         pass
 
 
-class Listing(gl.Contract):
+class Listing(gl.contract.Contract):
     oracle: str
 
     @gl.public.write

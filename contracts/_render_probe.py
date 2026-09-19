@@ -1,4 +1,5 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# v0.3.0
+# { "Depends": "py-genlayer:test" }
 
 # Throwaway diagnostic, not part of TokenScope. It answers the questions that
 # decide the whole project before a line of extraction is written:
@@ -19,6 +20,7 @@
 # Line 1 must stay the runner pin: a comment above it makes the contract
 # undeployable and the only error reported is `invalid_contract`.
 
+import genlayer as gl
 from genlayer import *
 
 import json
@@ -56,7 +58,7 @@ def _fetch(url: str) -> tuple:
     return _status(res), _body(res)
 
 
-class RenderProbe(gl.Contract):
+class RenderProbe(gl.contract.Contract):
     url: str
     text: str
     text_len: u32

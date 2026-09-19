@@ -60,6 +60,7 @@ def main() -> int:
     # Each of these fails on chain with an error that names neither the line
     # nor the reason, so each gets a check here. docs/PROBE.md section 12.
     for rel in ("contracts/TokenScope.py", "contracts/RiskConsumer.py",
+                "contracts/_render_probe.py",
                 "build/TokenScope.min.py", "build/RiskConsumer.min.py"):
         text = read(rel)
         lines = text.split("\n")
