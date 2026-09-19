@@ -431,10 +431,10 @@ The agreed feature vector behind the USDT score (`get_evidence`):
 
 ### Cross-network determinism — and what it does and does not claim
 
-**1.1.0, across three independent deployments.** USDT scored through the
-1.1.0 artifact returned `content_hash 465:96149d87575442e3` and `overall 85`
-on Studionet deployment `0xcEC1EC8A…`, then again on `0x8F45d757…`, then again
-on `0x19063FE1…` — the build this repository ships. Three deployments, three
+**Across independent deployments.** USDT scored through the 1.1.0 artifact
+returned `content_hash 465:96149d87575442e3` and `overall 85` on every
+deployment it has ever run on — four of them now, the last being the v0.6
+port on Studio Devnet that this repository ships. Four deployments, four
 validator sets, one fingerprint over 32 ordinals.
 
 Worth being precise about what that does and does not prove: those three
@@ -533,7 +533,7 @@ so two nodes cannot straddle a day boundary on a token neither read differently.
 
 Before a line of the contract was written, a throwaway contract
 ([`contracts/_render_probe.py`](contracts/_render_probe.py)) was deployed to
-Studionet to ask what Blockscout actually returns. It changed the design four
+a live network to ask what Blockscout actually returns. It changed the design four
 times — full findings in [`docs/PROBE.md`](docs/PROBE.md):
 
 1. **`?type=ERC-20` is a 422**, not a filter. `{"detail":"Unexpected field:
@@ -884,7 +884,7 @@ The suite checks five separate things:
 2. **A static undefined-name check over the whole file, class bodies included.**
    The pure region can be exec'd, but a name error inside a `@gl.public.view`
    only fires when that view is called on-chain — which is exactly how a
-   dangling `ok` in `verify_risk` reached Studionet during development. A parser
+   dangling `ok` in `verify_risk` reached a live network during development. A parser
    catches it in a millisecond; a deploy catches it in ten minutes.
 3. **Artifact parity** — the whole battery is re-run through
    `build/TokenScope.min.py` and asserted identical. The minified file is what
@@ -906,7 +906,7 @@ The suite checks five separate things:
 
 ### A bug the tests did not catch, and now do
 
-Scoring PEPE on Studionet returned a clean-looking **69** whose `sources_ok` read
+Scoring PEPE on chain returned a clean-looking **69** whose `sources_ok` read
 `address,contract,creation,transfers` — no `holders`. PEPE's total supply is
 4.2 × 10³² **raw units** (supply × 10¹⁸), which overflowed a `10**30` ceiling in
 the number parser. It read as `0`, which zeroed the supply, dropped the holders
@@ -960,7 +960,7 @@ Three details worth knowing:
 
 ```bash
 cd frontend
-cp .env.example .env.local     # defaults to Studionet
+cp .env.example .env.local     # defaults to studio-dev
 npm install
 npm run dev                    # http://localhost:3000
 

@@ -146,9 +146,20 @@ def main() -> int:
           "every class method survives minification")
 
     section("nothing still points at a retired network")
-    for rel in ("README.md", "deployments.json"):
-        check("bradbury" not in read(rel).lower(),
-              f"{rel}: no Bradbury references")
+    for rel in ("README.md", "deployments.json", "frontend/.env.example",
+                "tools/deploy_studio_dev.sh"):
+        low = read(rel).lower()
+        check("bradbury" not in low, f"{rel}: no Bradbury references")
+        check("studionet" not in low, f"{rel}: no Studionet references")
+    # .env.example is copied verbatim by developers, so a stale address there
+    # is a silent not-found rather than an error.
+    env = read("frontend/.env.example")
+    manifest = json.loads((ROOT / "deployments.json").read_text())
+    live = manifest["deployments"]["studio-dev"]
+    check(live["TokenScope"]["address"] in env,
+          ".env.example carries the deployed TokenScope address")
+    check(live["RiskConsumer"]["address"] in env,
+          ".env.example carries the deployed RiskConsumer address")
     fe = read("frontend/src/lib/genlayer.ts")
     check("studioDevnet" in fe, "frontend targets studioDevnet")
     check("61997" in json.dumps(json.loads(
