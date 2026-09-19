@@ -58,12 +58,17 @@ SIZE_BUDGET = 53_000
 # --------------------------------------------------------------------------
 
 class _UserError(Exception):
-    """Stands in for gl.vm.UserError, including the `.message` attribute the
-    contract's own error-class matching reads."""
+    """Stands in for gl.vm.UserError.
 
-    def __init__(self, message: str = ""):
-        super().__init__(message)
-        self.message = message
+    v0.6 renamed the payload: the constructor argument lands on `.data`, where
+    the pre-v0.6 SDK put it on `.message`. The contract reads it through its
+    own `_err_text`, and this stub carries `.data` ONLY - deliberately. If it
+    carried both, `_err_text` would pass whichever attribute it happened to
+    try first and the tests would not notice the day it reads the wrong one."""
+
+    def __init__(self, data: str = ""):
+        super().__init__(data)
+        self.data = data
 
 
 def _offline(*_a, **_k):
@@ -229,26 +234,40 @@ class _Contract:
 
 
 def _install_stub() -> None:
+    """A stand-in for the v0.6 `genlayer` package.
+
+    Shaped to match what the real SDK actually exposes, which was measured on
+    studio-dev rather than assumed (see docs/PROBE.md section 12):
+
+      - the module IS `gl`, so `import genlayer as gl` binds this object and
+        the contract reaches everything through `gl.<submodule>`;
+      - `from genlayer import *` brings in the scalar types and the
+        submodules, but NOT `DynArray` / `TreeMap` / `allow`. Those are
+        absent here for the same reason they are absent there: a stub that
+        offered them would let an unqualified `TreeMap[...]` pass the suite
+        and then fail on chain with a NameError, which is exactly the bug
+        this shape exists to catch.
+    """
     if "genlayer" in sys.modules:
         return
     mod = types.ModuleType("genlayer")
-    vm = types.SimpleNamespace(
+    mod.vm = types.SimpleNamespace(
         UserError=_UserError, Result=object, Return=object,
-        run_nondet_unsafe=_offline)
+        run_nondet=_offline)
     web = types.SimpleNamespace(request=_offline, render=_offline, get=_offline)
-    nondet = types.SimpleNamespace(web=web, exec_prompt=_offline)
-    public = types.SimpleNamespace(view=_identity, write=_WriteDeco())
-    evm = types.SimpleNamespace(contract_interface=_identity)
-    mod.gl = types.SimpleNamespace(
-        vm=vm, nondet=nondet, public=public, evm=evm, Contract=_Contract,
-        message=types.SimpleNamespace(sender_address=_Address(), value=0))
+    mod.nondet = types.SimpleNamespace(web=web, exec_prompt=_offline)
+    mod.public = types.SimpleNamespace(view=_identity, write=_WriteDeco())
+    mod.private = _identity
+    mod.evm = types.SimpleNamespace(contract_interface=_identity)
+    mod.contract = types.SimpleNamespace(Contract=_Contract)
+    mod.storage = types.SimpleNamespace(
+        TreeMap=TreeMap, DynArray=DynArray, Array=DynArray, allow=_identity)
+    mod.message = types.SimpleNamespace(sender_address=_Address(), value=0)
+    # Star-importable scalars, matching the real surface.
     mod.Address = _Address
     mod.u32 = u32
     mod.u64 = u64
     mod.u256 = u256
-    mod.TreeMap = TreeMap
-    mod.DynArray = DynArray
-    mod.allow_storage = _identity
     sys.modules["genlayer"] = mod
 
 
@@ -529,13 +548,28 @@ class TestStatic(unittest.TestCase):
         if ARTIFACT.exists():
             self.assertEqual(undefined_names(ARTIFACT), [])
 
-    def test_runner_header_is_line_one(self):
-        # Anything above the runner pin makes the contract undeployable and the
-        # only error reported is `invalid_contract`.
-        for path in (SOURCE, ARTIFACT):
-            if path.exists():
-                first = path.read_text(encoding="utf8").split("\n")[0]
-                self.assertTrue(first.startswith('# { "Depends"'), str(path))
+    def test_runner_header_is_the_first_two_lines(self):
+        """The v0.6 header is a VERSION line then the JSON, in that order, at
+        the very top. Anything above it makes the contract undeployable and
+        the only error reported is `invalid_contract runner malformed` - which
+        names neither the line nor the reason, so it gets a test instead."""
+        for path in (SOURCE, ARTIFACT, CONSUMER, CONSUMER_ARTIFACT):
+            if not path.exists():
+                continue
+            lines = path.read_text(encoding="utf8").split("\n")
+            self.assertEqual(lines[0], "# v0.3.0", str(path))
+            self.assertEqual(lines[1],
+                             '# { "Depends": "py-genlayer:test" }', str(path))
+            # and nothing else may look like runner config
+            self.assertFalse(lines[2].lstrip().startswith("#"), str(path))
+
+    def test_the_runner_header_json_parses(self):
+        for path in (SOURCE, ARTIFACT, CONSUMER, CONSUMER_ARTIFACT):
+            if not path.exists():
+                continue
+            line = path.read_text(encoding="utf8").split("\n")[1]
+            parsed = json.loads(line.lstrip()[1:])
+            self.assertEqual(parsed["Depends"], "py-genlayer:test", str(path))
 
     def test_no_str_replace_anywhere(self):
         # The runner rejects the stdlib string-replace method; _strip exists
@@ -1870,7 +1904,7 @@ class TestWatchlist(unittest.TestCase):
         self.assertEqual(self.c.get_watchlist(WALLET_A)["count"], 20)
         with self.assertRaises(_UserError) as caught:
             self.c.add_to_watchlist("0x" + f"{21:040x}", "ethereum")
-        self.assertIn("full", caught.exception.message)
+        self.assertIn("full", caught.exception.data)
         # and removing one makes room again
         self.c.remove_from_watchlist("0x" + f"{1:040x}", "ethereum")
         self.c.add_to_watchlist("0x" + f"{21:040x}", "ethereum")
@@ -2054,8 +2088,9 @@ class TestConsumerArtifact(unittest.TestCase):
             raise unittest.SkipTest("consumer not written yet")
         ast.parse(CONSUMER.read_text(encoding="utf8"))
         self.assertEqual(undefined_names(CONSUMER), [])
-        first = CONSUMER.read_text(encoding="utf8").split("\n")[0]
-        self.assertTrue(first.startswith('# { "Depends"'))
+        head = CONSUMER.read_text(encoding="utf8").split("\n")[:2]
+        self.assertEqual(head[0], "# v0.3.0")
+        self.assertEqual(head[1], '# { "Depends": "py-genlayer:test" }')
         if CONSUMER_ARTIFACT.exists():
             self.assertLessEqual(len(CONSUMER_ARTIFACT.read_bytes()),
                                  SIZE_BUDGET)
@@ -2278,7 +2313,7 @@ class TestOwnerProbe(unittest.TestCase):
         record a missing source it cannot vouch for."""
         with self.assertRaises(_UserError) as caught:
             self._run_seq([(429, "rate limited"), (404, "nope")])
-        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertTrue(caught.exception.data.startswith(M.ERR_TRANSIENT))
         self.assertEqual(self.f["src_owner"], 0)
 
     def test_both_hosts_missing_is_a_missing_document(self):
@@ -2331,29 +2366,29 @@ class TestOwnerProbe(unittest.TestCase):
         with self.assertRaises(_UserError) as caught:
             self._run(200, '{"message":"Too many requests.","result":null,'
                            '"status":"0"}')
-        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertTrue(caught.exception.data.startswith(M.ERR_TRANSIENT))
         self.assertEqual(self.f["src_owner"], 0)
 
     def test_a_non_revert_error_is_transient(self):
         with self.assertRaises(_UserError) as caught:
             self._run(200, '{"error":{"code":-32005,"message":"limit exceeded"}}')
-        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertTrue(caught.exception.data.startswith(M.ERR_TRANSIENT))
         self.assertEqual(self.f["src_owner"], 0)
 
     def test_a_5xx_is_transient(self):
         with self.assertRaises(_UserError) as caught:
             self._run(503, "upstream down")
-        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertTrue(caught.exception.data.startswith(M.ERR_TRANSIENT))
 
     def test_unparseable_json_is_transient(self):
         with self.assertRaises(_UserError) as caught:
             self._run(200, "<html>gateway</html>")
-        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertTrue(caught.exception.data.startswith(M.ERR_TRANSIENT))
 
     def test_a_json_array_is_transient(self):
         with self.assertRaises(_UserError) as caught:
             self._run(200, "[1,2,3]")
-        self.assertTrue(caught.exception.message.startswith(M.ERR_TRANSIENT))
+        self.assertTrue(caught.exception.data.startswith(M.ERR_TRANSIENT))
 
     def test_a_throttle_status_is_transient_not_a_missing_endpoint(self):
         """The bug this replaced: every 4xx was read as "this host has no
@@ -2365,7 +2400,7 @@ class TestOwnerProbe(unittest.TestCase):
             with self.assertRaises(_UserError) as caught:
                 self._run(status, "rate limited")
             self.assertTrue(
-                caught.exception.message.startswith(M.ERR_TRANSIENT), status)
+                caught.exception.data.startswith(M.ERR_TRANSIENT), status)
             self.assertEqual(self.f["src_owner"], 0, status)
 
     def test_429_specifically_is_transient(self):
@@ -2765,8 +2800,11 @@ class TestRescanToken(unittest.TestCase):
         self.assertEqual(callers, {"request_risk", "rescan_token"})
 
     def test_run_nondet_is_called_from_exactly_one_place(self):
+        """v0.6 dropped the `_unsafe` suffix; the guarantee is unchanged. One
+        call site means request_risk and rescan_token cannot drift apart."""
         source = SOURCE.read_text(encoding="utf8")
-        self.assertEqual(source.count("run_nondet_unsafe("), 1)
+        self.assertEqual(source.count("gl.vm.run_nondet("), 1)
+        self.assertNotIn("run_nondet_unsafe", source)
 
 
 class TestRiskHistory(unittest.TestCase):
@@ -2883,7 +2921,7 @@ class TestBatchScan(unittest.TestCase):
         many = [("0x%040x" % i) for i in range(1, self.module.BATCH_MAX + 2)]
         with self.assertRaises(_UserError) as caught:
             self.chain.c.batch_scan(many, "ethereum")
-        self.assertIn(str(self.module.BATCH_MAX), caught.exception.message)
+        self.assertIn(str(self.module.BATCH_MAX), caught.exception.data)
 
     def test_a_duplicate_does_not_consume_a_slot(self):
         """Six pasted lines of which two are the same token are FIVE tokens.

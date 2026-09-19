@@ -750,13 +750,61 @@ def _pool_strings(source: str) -> str:
     out = rebuilt.split("\n")
     return "\n".join(out[:anchor] + bindings + out[anchor:])
 
+def _split_runner_header(source: str) -> tuple[list[str], list[str]]:
+    """The runner comment block, and everything after it.
+
+    GenVM reads the runner configuration off the LEADING RUN of comment lines,
+    not off line 1 alone (SDK spec, Runners -> Runner Layout -> Text-based).
+    The v0.6 header is two lines:
+
+        # v0.3.0
+        # { "Depends": "py-genlayer:test" }
+
+    and the old one was a single `# { "Depends": ... }`. Both are just "the
+    comments before the first non-comment line", so one rule covers them.
+
+    This mattered more than it looks. The previous version kept line 1 and
+    then actively DELETED a comment sitting on line 2 - which, against a v0.6
+    header, silently removed the `Depends` line and produced an artifact that
+    deploys and then fails at runtime with `invalid_contract runner
+    malformed`. A blank line ends the block, which is what keeps the file's
+    prose header (separated by one) from being swept in.
+    """
+    lines = source.split("\n")
+    header: list[str] = []
+    for line in lines:
+        if line.lstrip().startswith("#"):
+            header.append(line)
+            continue
+        break
+    if not header:
+        raise SystemExit(
+            "line 1 is not the GenVM runner header; refusing to minify blind")
+    # A version line is optional, but if one is there it must come first, and
+    # every line after it has to be part of the JSON - so a stray non-JSON
+    # comment inside the block is a mistake worth failing on rather than
+    # shipping.
+    body = [line.lstrip()[1:].strip() for line in header]
+    if body[0].startswith("v"):
+        body = body[1:]
+    joined = "".join(body)
+    if joined:
+        import json as _json
+        try:
+            _json.loads(joined)
+        except ValueError:
+            raise SystemExit(
+                "the runner header's JSON does not parse; refusing to minify: "
+                + joined[:120])
+    return header, lines[len(header):]
+
+
 def minify(source: str, spaces_per_level: int = 1,
            rename: bool = True) -> tuple[str, dict]:
-    header, _, rest = source.partition("\n")
-    if not header.startswith("#"):
-        raise SystemExit(
-            "line 1 is not the GenVM runner header; refusing to minify blind"
-        )
+    header_lines, rest_lines = _split_runner_header(source)
+    header = "\n".join(header_lines)
+
+    del rest_lines  # the passes below re-derive their own line numbering
 
     doc_lines: set[int] = set()
     for start, end in _docstring_spans(source):
@@ -766,7 +814,7 @@ def minify(source: str, spaces_per_level: int = 1,
     kept = [
         line
         for number, line in enumerate(source.split("\n"), start=1)
-        if number not in doc_lines
+        if number not in doc_lines and number > len(header_lines)
     ]
     stage = "\n".join(kept)
 
@@ -840,9 +888,10 @@ def minify(source: str, spaces_per_level: int = 1,
         else:
             body.append(" " * (spaces_per_level * level) + stripped.rstrip())
 
-    # The header must be line 1 and nothing else may be a comment on line 2 —
-    # a second comment there makes the contract silently undeployable.
-    if body and body[0].lstrip().startswith("#"):
+    # Nothing may be a comment immediately after the runner header: the header
+    # is *defined* as the leading run of comment lines, so a comment there
+    # would be read as another line of runner config rather than as a comment.
+    while body and body[0].lstrip().startswith("#"):
         body = body[1:]
     return header + "\n" + "\n".join(body) + "\n", mapping, def_renames
 

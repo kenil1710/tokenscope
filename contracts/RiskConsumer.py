@@ -1,4 +1,5 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# v0.3.0
+# { "Depends": "py-genlayer:test" }
 
 # RiskConsumer - the block another builder copies.
 #
@@ -33,6 +34,7 @@
 # limit, the rug ceiling - and nothing else. A tier is a pure function of a
 # score the oracle already published.
 
+import genlayer as gl
 from genlayer import *
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -83,10 +85,14 @@ def _short(s: str, n: int = 120) -> str:
     return s[:n] if len(s) > n else s
 
 
-@gl.contract_interface
+@gl.contract.interface
 class ITokenScope:
     """The oracle's public surface, as this consumer uses it. Type stubs only -
-    at runtime this is the same thing gl.get_contract_at() returns."""
+    at runtime this is the same thing gl.contract.get_at() returns.
+
+    v0.6 moved the decorator from `gl.contract_interface` to
+    `gl.contract.interface`. The `ITokenScope(addr).view().method()` shape it
+    produces is unchanged, which is why nothing below this line had to move."""
 
     class View:
         def get_risk(self, token_address: str, chain: str) -> typing.Any: ...
@@ -109,7 +115,7 @@ class ITokenScope:
         pass
 
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class Listing:
     token: str
@@ -125,7 +131,7 @@ class Listing:
     listed_at: u64
 
 
-class RiskConsumer(gl.Contract):
+class RiskConsumer(gl.contract.Contract):
     owner: Address
     oracle: Address
 
@@ -134,10 +140,10 @@ class RiskConsumer(gl.Contract):
     max_rug_level: str
     slots: u32
 
-    listings: DynArray[Listing]
-    listed: TreeMap[str, bool]
+    listings: gl.storage.DynArray[Listing]
+    listed: gl.storage.TreeMap[str, bool]
     listing_count: u32
-    log: DynArray[str]
+    log: gl.storage.DynArray[str]
 
     def __init__(self, oracle_address: str):
         self.owner = gl.message.sender_address

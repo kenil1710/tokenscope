@@ -5,7 +5,7 @@
  *   - `getWalletClient()` — browser-only, signs via an injected EIP-1193 wallet.
  */
 import { createClient } from "genlayer-js";
-import { studionet, testnetBradbury } from "genlayer-js/chains";
+import { studioDevnet } from "genlayer-js/chains";
 
 /**
  * Next inlines `process.env.NEXT_PUBLIC_*` at build time only for *literal*
@@ -20,13 +20,18 @@ const rawNetwork = process.env.NEXT_PUBLIC_GENLAYER_NETWORK;
  * Always use the SDK's built-in chain definitions rather than hand-rolling a
  * chain object: they carry the consensus/staking/fee-manager addresses and
  * `isStudio`, which the SDK needs to poll transactions.
+ *
+ * `studioDevnet` (chain 61997) arrived in genlayer-js 2.0.0-rc.1; the 1.x line
+ * did not carry it. That upgrade is why this file can name the network it
+ * targets instead of hand-rolling a chain object, which the paragraph above
+ * exists to forbid.
  */
-const CHAINS = { studionet, bradbury: testnetBradbury } as const;
+const CHAINS = { "studio-dev": studioDevnet } as const;
 
 export type NetworkName = keyof typeof CHAINS;
 
 function resolveNetwork(value: string | undefined): NetworkName {
-  if (!value) return "studionet";
+  if (!value) return "studio-dev";
   if (value in CHAINS) return value as NetworkName;
   throw new Error(
     `NEXT_PUBLIC_GENLAYER_NETWORK must be one of ${Object.keys(CHAINS).join(" | ")}, got: ${value}`,
@@ -42,13 +47,13 @@ export const IS_GASLESS = Boolean(chain.isStudio);
 /** `chain.id` as the hex string EIP-1193 expects. Derived, never hand-written. */
 export const CHAIN_ID_HEX = `0x${chain.id.toString(16)}`;
 
-export const NETWORK_LABEL: string = { studionet: "Studionet", bradbury: "Bradbury" }[
-  NETWORK
-];
+export const NETWORK_LABEL: string = { "studio-dev": "Studio Devnet" }[NETWORK];
 
 const WALLET_NETWORK: Record<NetworkName, { name: string; explorer?: string }> = {
-  studionet: { name: "GenLayer Studionet", explorer: "https://studio.genlayer.com" },
-  bradbury: { name: "GenLayer Bradbury Testnet" },
+  "studio-dev": {
+    name: "GenLayer Studio Devnet",
+    explorer: "https://studio-dev.genlayer.com",
+  },
 };
 
 function addChainParams() {
@@ -150,7 +155,7 @@ export const CONSUMER_ADDRESS: string | null =
     : null;
 
 /**
- * Same-origin relay for Studionet, implemented at `app/api/rpc/route.ts`.
+ * Same-origin relay for Studio, implemented at `app/api/rpc/route.ts`.
  *
  * Studio serves CORS headers on success but drops them on its 429s, so an
  * exhausted rate limit reaches the browser as "No 'Access-Control-Allow-Origin'
@@ -158,7 +163,8 @@ export const CONSUMER_ADDRESS: string | null =
  * our own origin means the browser can always read the response, so failures
  * arrive with their real reason attached.
  *
- * Bradbury sets the headers on errors too, so it stays direct.
+ * Every network this app targets is now a Studio network, so the relay is
+ * unconditional in the browser rather than gated on which one.
  */
 const STUDIO_PROXY_PATH = "/api/rpc";
 
@@ -169,7 +175,7 @@ const STUDIO_PROXY_PATH = "/api/rpc";
  */
 function rpcUrl(): string {
   const direct = chain.rpcUrls.default.http[0];
-  if (NETWORK !== "studionet" || typeof window === "undefined") return direct;
+  if (typeof window === "undefined") return direct;
   return STUDIO_PROXY_PATH;
 }
 
@@ -231,19 +237,14 @@ export async function ensureCorrectNetwork(): Promise<void> {
 /**
  * Explorer link for a tx hash or address on the GenLayer network.
  *
- * Studionet is special-cased because the explorer its chain definition declares
- * — `genlayer-explorer.vercel.app` — currently answers 503, so a link built
- * from it is dead on arrival. Studio itself is up and is where a Studionet
- * contract is actually inspected, so that is where the link goes. Deliberately
- * the app root rather than a guessed `/contracts/<addr>` deep link: a
- * single-page app returns 200 for any path, so a 200 there would not have
- * proved the route exists, and a plausible-looking dead link is worse than an
- * honest one.
- *
- * Bradbury's explorer is live and takes the normal `/address/…` form.
+ * Studio Devnet's chain definition declares no block explorer, and Studio
+ * itself is a single-page app that answers 200 for any path — so a guessed
+ * `/contracts/<addr>` deep link would look verified without being so. This
+ * returns the Studio root instead. A plausible-looking dead link is worse
+ * than an honest one.
  */
 export function explorerUrl(kind: "tx" | "address", value: string): string {
-  if (NETWORK === "studionet") return "https://studio.genlayer.com";
   const base = chain.blockExplorers?.default?.url?.replace(/\/$/, "") ?? "";
+  if (!base) return "https://studio-dev.genlayer.com";
   return `${base}/${kind}/${value}`;
 }

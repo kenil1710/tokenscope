@@ -3,6 +3,61 @@
   "category": "Intelligent Contracts",
   "summary": "On-chain multi-chain ERC-20 risk assessment. Validators agree on a 32-ordinal feature vector; every score is arithmetic over it.",
   "rubric_version": "1.1.0",
+  "contract_format": {
+    "dialect": "v0.6",
+    "runner_header": [
+      "# v0.3.0",
+      "# { \"Depends\": \"py-genlayer:test\" }"
+    ],
+    "notes": "Two lines, version first. py-genlayer:test is a symbolic id the node resolves; pinned content hashes were tried and refused with 'invalid_contract runner malformed'. Storage lives at gl.storage.* only - a bare TreeMap[...] is a NameError on chain. UserError carries .data, not .message. See docs/PROBE.md section 12.",
+    "sdk": "genlayer-js 2.0.0-rc.1 in the frontend (first version carrying studioDevnet / chain 61997); genlayer CLI 0.40.0-rc.3"
+  },
+  "chains_scored": [
+    "ethereum",
+    "base",
+    "arbitrum",
+    "polygon"
+  ],
+  "data_source": "Blockscout /api/v2 for the five REST documents, plus one eth_call of owner() over JSON-RPC - publicnode first, Blockscout's own /api/eth-rpc as the fallback. All unauthenticated.",
+  "note": "Verify with: shasum -a 256 build/*.min.py against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py (the CLI appends trailing newlines; strip them).",
+  "artifacts": {
+    "build/TokenScope.min.py": {
+      "sha256": "e5ef09c9b924c4f31b447569663adba5f511202bed8dcc1a6daf617460465772",
+      "bytes": 51427,
+      "source": "contracts/TokenScope.py",
+      "source_sha256": "870fe57017e01fba484a8f64f3802e64668ce2cc37bc9948b9c64ec03c0a5a52",
+      "name_map": "build/TokenScope.min.names.json"
+    },
+    "build/RiskConsumer.min.py": {
+      "sha256": "dceee5711552cfec179428dbca68c05013b0806f0c2ba77528a971db25232f30",
+      "bytes": 10655,
+      "source": "contracts/RiskConsumer.py",
+      "source_sha256": "3337e8a0e98fa74bc0d7ef1a5edc887ddfd18de029e41c8de3aeedf169590f70",
+      "name_map": "build/RiskConsumer.min.names.json"
+    }
+  },
+  "deployments": {
+    "studio-dev": {
+      "network": "studio-dev",
+      "chain_id": "61997",
+      "rpc": "https://studio-dev.genlayer.com/api",
+      "TokenScope": {
+        "address": "0xf68f3743f9783185C0D8C45aff20f9d712949d02",
+        "rubric_version": "1.1.0",
+        "artifact": "build/TokenScope.min.py",
+        "fee_note": "fee_wei set to 0 on this demo deployment. The CLI has no flag for attaching CONTRACT value to a write - --fee-value is the network fee deposit, a different thing - so a non-zero fee would make request_risk uncallable from the command line. The fee path is exercised in the offline suite.",
+        "verified": "genlayer code <address> is byte-identical to build/TokenScope.min.py after stripping the trailing newlines the CLI adds. Checked after deploy."
+      },
+      "RiskConsumer": {
+        "address": "0x65B86007A22B06C6cdeCDF72BdA55dA8B4A92Eb1",
+        "artifact": "build/RiskConsumer.min.py",
+        "constructor_args": [
+          "0xf68f3743f9783185C0D8C45aff20f9d712949d02"
+        ]
+      },
+      "writes_need_fees": "Every write reverts with FeeValueMustBeNonZero(1) unless BOTH --fees (the distribution object) and --fee-value are supplied. tools/deploy_studio_dev.sh reads them out of `genlayer estimate-fees --json`."
+    }
+  },
   "milestone": {
     "of": "the accepted 1.0.0 submission",
     "adds": [
@@ -15,324 +70,17 @@
     "renames": "UNVERIFIED -> UNVERIFIED_SOURCE and CONCENTRATED -> CONCENTRATED_SUPPLY, rather than adding duplicate flags that would double-count in batch_scan.total_rug_flags. CONCENTRATED_SUPPLY also moved from the 75% rung to the 50% one the name claims; the rug ladder still keys its severe rungs off 75%.",
     "tests": "140 -> 302 tests, 7,035 assertions executed."
   },
-  "runner": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6",
-  "chains_scored": [
-    "ethereum",
-    "base",
-    "arbitrum",
-    "polygon"
-  ],
-  "data_source": "Blockscout /api/v2 for the five REST documents, plus one eth_call of owner() over JSON-RPC - publicnode first, Blockscout's own /api/eth-rpc as the fallback. All unauthenticated.",
-  "note": "Verify with: shasum -a 256 build/*.min.py and compare against the sha256 fields below, or genlayer code <address> | diff - build/TokenScope.min.py (the CLI appends trailing newlines; strip them).",
-  "artifacts": {
-    "build/TokenScope.min.py": {
-      "sha256": "7075a978b3764d2337165ac2ee5dd31381e9a6dd76d282113b95ab109d9e9750",
-      "bytes": 51390,
-      "source": "contracts/TokenScope.py",
-      "source_sha256": "d5fcbaeb1293b78835adf88992d07e6e6736014ebab3e8467fca67ae53e5d697",
-      "name_map": "build/TokenScope.min.names.json"
+  "history": {
+    "why_studio_dev": "1.1.0 previously ran on an older Studio network, and 1.0.0 on two networks at once. Everything now lives on one so old and new features are demonstrable in one place - which also removed the split-brain where the app read one deployment and the docs described another.",
+    "port_cost": "The move required the v0.6 dialect: a two-line runner header, gl.contract.Contract, gl.storage.*, gl.vm.run_nondet, gl.contract.interface, and UserError.data. It moved no ordinal - USDT's content_hash is identical before and after (see cross_format_determinism).",
+    "earlier_size_finding": {
+      "claim": "AuditCourt's notes put the GenVM runner deploy limit at 48 KB.",
+      "measured_2026_08_31": "Stale. A 50,382-byte TokenScope artifact deployed successfully.",
+      "measured_2026_09_02": "There IS a ceiling and it was found by walking into it. A 54,325-byte artifact was refused with 'invalid transaction: BlockPubdataLimitReached' at eth_estimateGas, followed by a misleading 'intrinsic gas too low' on the send. Padded probe contracts then bracketed it: 52,000 and 53,000 both deployed, 53,700 was refused.",
+      "why_it_matters": "It is a BLOCK pubdata limit, not a per-transaction one, so the exact figure depends on what else is in the block. test/test_logic.py budgets 53,000 rather than 53,700 for that reason, and keeps doing so even where the current network prices deploys differently - a size test that only passes because today's network is generous is not a test.",
+      "how_it_was_fixed": "Not by cutting a feature. tools/minify_contract.py gained a string-pooling pass (54,325 -> 52,070) and later a scope-resolved identifier-renaming pass (59,532 -> 51,427). Neither changed any string's value, and USDT's content hash is identical before and after each.",
+      "full_log": "docs/PROBE.md sections 11 and 12"
     },
-    "build/RiskConsumer.min.py": {
-      "sha256": "c94e79f96625ad5a41709e5c3cbfccec11aeecc40315d66c077a563ace730522",
-      "bytes": 10627,
-      "source": "contracts/RiskConsumer.py",
-      "source_sha256": "17ff02e9550e03e4d96fbd71e1516efc344707b4d2d41ef42a4561b4ac23bcf8",
-      "name_map": "build/RiskConsumer.min.names.json"
-    }
-  },
-  "deployments": {
-    "studionet": {
-      "network": "studionet",
-      "chain_id": "61999",
-      "rpc": "https://studio.genlayer.com/api",
-      "TokenScope": {
-        "address": "0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88",
-        "rubric_version": "1.1.0",
-        "artifact": "build/TokenScope.min.py",
-        "fee_note": "fee_wei set to 0 on this demo deployment. The genlayer CLI hardcodes value: 0n on writes, so there is no way to attach payable value from the command line; the fee path is exercised in the offline suite instead. DEFAULT_FEE_WEI is 0.01 GEN in the source.",
-        "verified": "genlayer code <address> is byte-identical to build/TokenScope.min.py (51,390 bytes) after stripping the two trailing newlines the CLI adds."
-      },
-      "RiskConsumer": {
-        "address": "0xcb9c1E7214B4e610c28A3E8242d9bc2b793A8193",
-        "artifact": "build/RiskConsumer.min.py",
-        "constructor_args": [
-          "0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88"
-        ]
-      },
-      "render_probe": {
-        "address": "0xae8aDe63EB2400D0dFEC841Ee1A886AE17e4c7f5",
-        "artifact": "contracts/_render_probe.py",
-        "why": "throwaway diagnostic, not part of TokenScope; the evidence behind docs/PROBE.md, including the 422 on ?type=ERC-20 and the transient 500 from base.blockscout.com"
-      },
-      "superseded": {
-        "TokenScope 1.1.0 (build 3)": "0x6debD1f26697eF1E8C0D2b0E82fc7B6bEfd82Ae5",
-        "TokenScope 1.1.0 (build 2)": "0x8F45d757D01db9104cbf535B0Bf241683e385744",
-        "TokenScope 1.1.0 (build 1)": "0xcEC1EC8AEc99776767BeC16672ff4DBE49D95833",
-        "TokenScope 1.0.0": "0xaC6B3575D82825533cA7E35fE8C57c9075b74E95",
-        "TokenScope 1.0.0 (pre-watchlist)": "0x386245fE7e8c28967f84F79eb93532b12cCa9987",
-        "RiskConsumer 1.1.0 (build 3)": "0x9dE92650bf9e784c4d5BbAD3aFC279c131d20D63",
-        "RiskConsumer 1.1.0 (build 2)": "0x7accF644cF30820893F532a8CFD5c8b5cCfb9De8",
-        "RiskConsumer 1.0.0": "0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28",
-        "RiskConsumer (pre-watchlist)": "0x76cDC81E9dEe818b59Ee0FD198d081D33B47ea87",
-        "why_superseded": "Four builds, and each one was fixed because something it did was visible on chain. Build 1 ran the owner probe after the model call rather than before it, and counted batch_scan's 5-address cap before de-duplicating. Build 2 fixed both, and then PEPE came back with src_owner 0 on its first round while the same URL answered 200 by hand seconds later - every 4xx was being read as 'this host has no such endpoint', so a throttle was being recorded as a property of the token. Build 3 classified 401/403/408/425/429 as transient, which is correct and also made rounds fail half the time: ten concurrent POSTs to Blockscout's /api/eth-rpc draw nine 429s, and a consensus round is a burst by construction. Build 4 leads with publicnode, which took the same burst with ten 200s and covers all four chains, and keeps Blockscout as the fallback. A second host is safe here because both read the same chain and the answer is one bit - it changes the odds of getting an answer, never the answer."
-      }
-    },
-    "testnet-bradbury": {
-      "network": "testnet-bradbury",
-      "chain_id": "4221",
-      "rpc": "https://rpc-bradbury.genlayer.com",
-      "explorer": "https://explorer-bradbury.genlayer.com/",
-      "status_2026_09_19": "1.1.0 IS NOT DEPLOYED HERE, AND CANNOT BE. See bradbury_blocker below. The 1.0.0 deployment remains live and readable.",
-      "TokenScope": {
-        "address": "0xbAAF6f0151D728984445fc42edAC84e13241d4E6",
-        "rubric_version": "1.0.0",
-        "artifact": "build/TokenScope.min.py at commit e334391 (52,070 bytes, sha256 3706a8a2b40cf55c261d88d47cba3901ff92e9fc01a47f38d2428a3b190a2621)",
-        "fee_note": "fee_wei set to 0 on this demo deployment.",
-        "reading_it_today": "Requires genlayer CLI 0.39.2. Release 0.40.0-rc.3 ships the v0.6 calldata format and fails against it with 'call to private method Contract.__handle_undefined_method__'."
-      },
-      "RiskConsumer": {
-        "address": "0x9DbdC862e5A35AC0126cd47d4B105E679A2Dd9ee",
-        "artifact": "build/RiskConsumer.min.py at commit e334391",
-        "constructor_args": [
-          "0xbAAF6f0151D728984445fc42edAC84e13241d4E6"
-        ]
-      },
-      "superseded": {
-        "TokenScope": "0xA81049c078F84816611b0297C8c4365CAda118a1",
-        "RiskConsumer": "0x9d7268Ad83c89bE3d5c494a2558c748CF1BA7Ad2",
-        "why_superseded": "Predates the watchlist. This is the pair named in the original accepted submission."
-      }
-    }
-  },
-  "bradbury_blocker": {
-    "measured_2026_09_19": "Bradbury rejects eth_sendRawTransaction with 'gas limit too high' for any transaction whose gas limit exceeds 16,777,216 - exactly 2**24. Bisected: 16,777,216 deploys, 16,777,217 is refused. The block gas limit is 100,000,000, so this is a PER-TRANSACTION cap, not a block one.",
-    "gas_model": "Deploy gas is linear in source size at ~809.5 gas/byte plus ~240,000 fixed. Measured: 5,000 bytes -> 4,905,669 gas; 15,000 -> 12,573,064; 20,000 -> 16,640,019 (deploys); 21,000 -> 17,406,313 (refused); 50,779 (TokenScope 1.1.0 as measured) -> 40,479,983 (refused); the shipped 51,390-byte artifact projects to ~41.8M.",
-    "ceiling": "~20,170 bytes of contract source.",
-    "not_a_milestone_regression": "The 52,070-byte 1.0.0 artifact that is LIVE on Bradbury right now cannot be redeployed today either. That exact file was pulled from git and tried byte for byte, and was refused identically. A ten-line probe contract deploys fine, so the chain is healthy - the cap is the constraint.",
-    "no_compression_route": "GenVM's ZIP runner layout permits 'stored' only, no deflate (SDK spec, Runners -> Runner Layout -> ZIP Archive), so an archive is larger than the source rather than smaller.",
-    "supersedes": "The 2026-09-02 finding below, which measured a BLOCK PUBDATA ceiling between 53,000 and 53,700 bytes. That ceiling is still what the test suite budgets against, because it is the one that binds on Studionet and the one that will bind again on Bradbury if the gas cap is raised.",
-    "cli_incompatibility": "Separately: genlayer 0.40.0-rc.3 (2026-09-03) cannot talk to old-format Bradbury contracts at all - both reads and deploys fail, with 'runner comment does not start with version, using default v0.1.0' and 'call to private method Contract.__handle_undefined_method__'. 0.39.2 is the last release that speaks the format Bradbury's deployed contracts were built with, and every figure here was measured with it.",
-    "reproduce": "bash tools/deploy_bradbury.sh - it prints the projected gas against the cap before it tries, and says what it expects to happen. Full bisection in docs/PROBE.md section 11."
-  },
-  "size_finding": {
-    "claim": "AuditCourt's notes put the GenVM runner deploy limit at 48 KB.",
-    "measured_2026_08_31": "That is stale. A 50,382-byte TokenScope artifact deployed successfully to BOTH Studionet and Bradbury.",
-    "measured_2026_09_02": "There IS a ceiling and it was found by walking into it. The 54,325-byte artifact carrying the watchlist was refused on Bradbury with 'invalid transaction: BlockPubdataLimitReached' at eth_estimateGas, followed by 'intrinsic gas too low' on the send. Padded probe contracts then bracketed it: 52,000 and 53,000 bytes both deployed, 53,700 was refused. So the ceiling sits between 53,000 and 53,700 bytes of source.",
-    "how_it_was_fixed": "Not by cutting the feature. tools/minify_contract.py gained a string-pooling pass that binds repeated literals to two-character module names \u2014 'token_address' alone appears 15 times \u2014 which took the artifact from 54,325 to 52,070 bytes with no change to any string's value. Annotations, f-string fragments and match patterns are excluded, because in those three places a name and a literal do not mean the same thing.",
-    "why_it_matters": "It is a BLOCK pubdata limit, not a per-transaction one, so the exact figure depends on what else is in the block. The test suite budgets 53,000 rather than 53,700 for that reason."
-  },
-  "cross_network_result": {
-    "token": "USDT 0xdac17f958d2ee523a2206206994597c13d831ec7 on ethereum",
-    "same_hash_across_networks": "422:41a76eee24bba743 with overall 86, produced independently on the new Studionet and Bradbury deployments by different validator sets.",
-    "same_hash_across_artifacts": "That is the SAME hash the pre-pooling 50,382-byte artifact produced on Bradbury on 2026-08-31. Binding repeated string literals to short names changed 2,255 bytes of source and not one of the 29 agreed ordinals - which is the check that matters, because the hash is a digest of the vector every validator independently reproduced.",
-    "second_token": "PEPE 0x6982508145454ce325ddbe47a25d4ec3d2311933 on ethereum: 422:28e4f85588019150, overall 87, distribution_score 80, sources_ok address,contract,creation,holders,transfers.",
-    "what_this_shows": "Determinism is enforced WITHIN a round, with no tolerance. Across time a token's real distribution moves and a rung eventually gets crossed. Quantization absorbs the drift - a design comparing raw percentages would report a change where nothing material happened."
-  },
-  "composability_result": {
-    "consumer": "RiskConsumer.list_token goes through TokenScope.require_safe, which REVERTS rather than returning false.",
-    "listed": "USDT on Bradbury: tier blue_chip, overall 86, rug_level MEDIUM, trade_cap 10000000",
-    "revert_proof": "list_token on an unscored token returns [EXPECTED] no score for ethereum:0x514910771af9ca656af840dff83e8264ecf986ca, while preview_listing on the same token degrades to {listable:false, reason:'never scored', badge:'UNSCORED'}"
-  },
-  "live_scores_1_0_0": {
-    "network": "testnet-bradbury 0xbAAF6f0151D728984445fc42edAC84e13241d4E6",
-    "USDT ethereum": {
-      "overall": 86,
-      "content_hash": "422:41a76eee24bba743",
-      "distribution": 70,
-      "activity": 100,
-      "verification": 75,
-      "maturity": 100,
-      "liquidity": 95,
-      "rug_level": "MEDIUM",
-      "rug_flags": [
-        "MINTABLE",
-        "PAUSABLE",
-        "HAS_BLACKLIST"
-      ],
-      "confidence": "HIGH",
-      "sources_ok": "address,contract,creation,holders,transfers"
-    },
-    "PEPE ethereum": {
-      "overall": 87,
-      "content_hash": "422:28e4f85588019150",
-      "distribution": 80,
-      "rug_level": "MEDIUM",
-      "rug_flags": [
-        "HAS_BLACKLIST"
-      ],
-      "confidence": "HIGH",
-      "sources_ok": "address,contract,creation,holders,transfers"
-    },
-    "USDT0 arbitrum": {
-      "overall": 89,
-      "content_hash": "423:96852a8e3bafa0b8",
-      "distribution": 90,
-      "verification": 65,
-      "rug_level": "MEDIUM",
-      "rug_flags": [
-        "UPGRADEABLE_PROXY"
-      ],
-      "confidence": "HIGH",
-      "sources_ok": "address,contract,creation,holders,transfers",
-      "note": "88 on the previous deployment, 89 on this one - one ordinal crossed a rung between the two scans, and the hash prefix moved 422 -> 423 to say so. Also needed several attempts: Arbitrum's /holders answers 200 but takes ~7.5s for 25 KB, and rounds came back LEADER_TIMEOUT before one settled. A timeout writes nothing."
-    },
-    "base / polygon": {
-      "scored": false,
-      "why": "Blockscout /holders on those hosts returns 500 / Cloudflare 524. Base refuses cleanly in ~37s; Polygon's round outlives the CLI timeout because its 524 arrives after a ~100s stall. Neither writes a score - both chains read back 0 tokens_tracked."
-    }
-  },
-  "watchlist_result": {
-    "owner": "0xc70ff4c06aecb796ed712029ee548834764c9fe8",
-    "network": "testnet-bradbury",
-    "sequence": "USDT was scored, then watched (baseline 86). PEPE was watched BEFORE it was ever scored, then scored.",
-    "read_back": "USDT: direction SAME, delta 0, baseline_overall 86, overall_score 86. PEPE: direction NEW, delta 87, baseline_overall 0, overall_score 87. count 2, capacity 20, moved 0, unscored 0.",
-    "why_moved_is_zero": "A first score is not movement. baseline_seq 0 means the watcher never saw a score to move away from, so the entry reports NEW and is left out of the moved count - which is what makes `moved` mean 'something you were watching changed'."
-  },
-  "live_scores_1_1_0": {
-    "network": "studionet 0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88",
-    "what_these_show": "Five tokens across two chains, and all three owner-probe response classes. USDT and USDT0 answer a live address; PEPE answers the zero address; LINK and SHIB revert because they have no owner() at all. Every one of them ends up with `owner` in sources_ok, because a revert is an ANSWER - and they land on five different verification scores because of what that answer was.",
-    "USDT ethereum": {
-      "token_id": 1,
-      "overall": 85,
-      "content_hash": "465:96149d87575442e3",
-      "distribution": 70,
-      "activity": 100,
-      "verification": 70,
-      "maturity": 100,
-      "liquidity": 95,
-      "rug_level": "MEDIUM",
-      "badge": "MODERATE_RISK",
-      "confidence": "HIGH",
-      "rug_flags": [
-        "MINTABLE",
-        "PAUSABLE",
-        "HAS_BLACKLIST",
-        "HIDDEN_OWNER"
-      ],
-      "sources_ok": "address,contract,creation,holders,owner,transfers",
-      "vs_1_0_0": "was overall 86, verification 75, 3 flags, hash 422:41a76eee24bba743. owner() answers 0xc6cde7c39eb2f0f0095f41570af89efc2c1ea828, so HIDDEN_OWNER fires and the live key costs 10 of verification's points. The rug level did NOT move: USDT is verified, eight years old, widely held and not concentrated, so the ladder reads the key as centralisation rather than a rug."
-    },
-    "PEPE ethereum": {
-      "token_id": 2,
-      "overall": 88,
-      "content_hash": "465:dc9cf40900e26bdf",
-      "distribution": 80,
-      "activity": 95,
-      "verification": 80,
-      "maturity": 100,
-      "liquidity": 90,
-      "rug_level": "MEDIUM",
-      "badge": "MODERATE_RISK",
-      "confidence": "HIGH",
-      "rug_flags": [
-        "HAS_BLACKLIST"
-      ],
-      "sources_ok": "address,contract,creation,holders,owner,transfers",
-      "vs_1_0_0": "was overall 87, verification 75. THIS IS THE CASE THE MILESTONE EXISTS FOR. PEPE has an `owner` function AND has renounced; 1.0.0's ABI inference called it owned. owner() answers 0x000...000, so check_rug_pull now reports ownership_renounced true with owner_probe true, and verification gains the 10 points 1.0.0 could not award it."
-    },
-    "LINK ethereum": {
-      "token_id": 3,
-      "overall": 90,
-      "content_hash": "465:3f90b2e299927c0e",
-      "verification": 75,
-      "rug_level": "NONE",
-      "badge": "VERIFIED_SAFE",
-      "rug_flags": [],
-      "sources_ok": "address,contract,creation,holders,owner,transfers",
-      "note": "owner() reverts - LINK has no owner function at all. A clean `execution reverted` is an ANSWER, not a failure, so src_owner is set and `owner` appears in sources_ok even though nothing was read."
-    },
-    "SHIB ethereum": {
-      "token_id": 4,
-      "overall": 83,
-      "content_hash": "465:e96d339961dcdd26",
-      "verification": 75,
-      "rug_level": "NONE",
-      "badge": "VERIFIED_SAFE",
-      "rug_flags": [],
-      "sources_ok": "address,contract,creation,holders,owner,transfers",
-      "note": "owner() reverts, like LINK. No owner function, so nothing to renounce and nothing to fear from one."
-    },
-    "USDT0 arbitrum": {
-      "token_id": 5,
-      "overall": 87,
-      "content_hash": "466:67bb9d6bd8cc4175",
-      "verification": 60,
-      "rug_level": "MEDIUM",
-      "badge": "MODERATE_RISK",
-      "rug_flags": [
-        "UPGRADEABLE_PROXY",
-        "HIDDEN_OWNER"
-      ],
-      "sources_ok": "address,contract,creation,holders,owner,transfers",
-      "vs_1_0_0": "was overall 89, verification 65, one flag. owner() answers 0x4dff9b5b0143e642a3f63a5bcf2d1c328e600bf8, so HIDDEN_OWNER joins UPGRADEABLE_PROXY - a live key AND replaceable logic, which is a materially different thing to hold than either alone.",
-      "why_it_matters_here": "This is the second chain, and it proves the fallback is not an ethereum-only arrangement: arbitrum-one-rpc.publicnode.com answered and `owner` is in sources_ok."
-    }
-  },
-  "portfolio_result": {
-    "call": "batch_scan([USDT, PEPE, LINK, SUSHI], 'ethereum') on studionet 0x19063FE1",
-    "returned": {
-      "requested": 4,
-      "scored": 3,
-      "coverage_pct": 75,
-      "portfolio_score": 87,
-      "mean_score": 87,
-      "flagged_tokens": 2,
-      "total_rug_flags": 5,
-      "high_risk_tokens": 0,
-      "order": "SUSHI (unscored, rank 1), USDT 85, PEPE 88, LINK 90"
-    },
-    "why_unscored_sorts_first": "An address nobody has checked is the one a holder should look at first, and it carries weight 0 so it moves no aggregate. A zero score would otherwise place it beside the worst real result, which says something the oracle does not know.",
-    "weighting": "All three scored tokens sit in the top market-cap bucket, so weight 6 each and the weighted score equals the plain mean. The two diverge when the buckets do - a dust-sized token cannot drag the headline down as hard as a large holding.",
-    "comma_separated_form": {
-      "call": "batch_scan('USDT,usdt-again-lowercase,SUSHI', 'ethereum')",
-      "returned": "requested 2 - the duplicate collapsed - scored 1, total_rug_flags 4, portfolio_score 85",
-      "why": "A duplicate is a paste slip, not a second holding. The cap is counted AFTER de-duplication, so six pasted lines of which two are the same token are five tokens and are accepted."
-    }
-  },
-  "rescan_result": {
-    "call": "rescan_token(1) on studionet 0x19063FE1, 28 minutes after USDT's first scan",
-    "round": "MAJORITY_AGREE, ACCEPTED. New score_id 6, seq 2.",
-    "read_back": {
-      "overall_score": 85,
-      "previous_overall": 85,
-      "risk_delta": 0,
-      "has_previous": true,
-      "content_hash": "465:96149d87575442e3"
-    },
-    "the_distinction_this_proves": "risk_delta 0 with has_previous TRUE is 'unchanged'. The first scan read risk_delta 0 with has_previous FALSE, which is 'nothing to compare against'. Both are zero and they are not the same claim - a UI reading the number alone would report 'unchanged' for a token's very first scan. That is the whole reason prev_seq is stored beside prev_overall.",
-    "determinism_across_time": "The re-scan reproduced content_hash 465:96149d87575442e3 exactly - the same 32 ordinals, 28 minutes and one consensus round later, on a live token whose holder count and transfer window both moved underneath it. That is quantization doing its job: the ladders absorbed the drift.",
-    "get_risk_history(1)": {
-      "returned": 2,
-      "capacity": 12,
-      "update_count": 2,
-      "best_overall": 85,
-      "worst_overall": 85,
-      "window_delta": 0,
-      "latest_delta": 0,
-      "per_record": "newest has_previous true / previous_overall 85; oldest has_previous false / previous_overall 0",
-      "get_history_by_address": "returns the identical two records for the same token"
-    }
-  },
-  "verifiability_1_1_0": {
-    "call": "verify_risk(1)",
-    "result": "valid true, failed [] - all thirteen checks pass over the 32-ordinal evidence",
-    "content_hash": "465:96149d87575442e3"
-  },
-  "composability_1_1_0": {
-    "consumer": "0xcb9c1E7214B4e610c28A3E8242d9bc2b793A8193",
-    "preview_listing(USDT, ethereum)": "overall 85, rug_level MEDIUM, badge MODERATE_RISK, confidence HIGH",
-    "note": "RiskConsumer needed no change for the milestone: it calls only get_risk, is_safe, require_safe, check_rug_pull, get_badge and get_stats, none of which changed signature."
-  },
-  "stats_after_the_demo": {
-    "tokens_tracked": 5,
-    "total_scored": 6,
-    "avg_overall": 86,
-    "rug_levels": {
-      "CRITICAL": 0,
-      "HIGH": 0,
-      "LOW": 0,
-      "MEDIUM": 4,
-      "NONE": 2
-    }
+    "retired_networks": "Deploy-ceiling and CLI-compatibility measurements for the networks this project used to target are kept in docs/PROBE.md sections 11 and 12, dated, because the figures were measured rather than assumed and the method transfers. They are history, not configuration."
   }
 }

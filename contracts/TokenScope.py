@@ -1,4 +1,5 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# v0.3.0
+# { "Depends": "py-genlayer:test" }
 
 # TokenScope - on-chain multi-chain ERC-20 risk assessment for GenLayer.
 # Full design: docs/DESIGN.md. Measured source shapes: docs/PROBE.md.
@@ -75,6 +76,7 @@
 # CONCENTRATED_SUPPLY replaces CONCENTRATED at the 50% line the milestone
 # specifies, while the rug ladder still keys its severe rungs off 75%.
 
+import genlayer as gl
 from genlayer import *
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -281,6 +283,26 @@ STANDARD_ABI = (
 # --- pure helpers. No storage, no gl.*: leader and validators share them
 # byte-for-byte, and direct-mode tests exercise them offline. A closure that
 # captured `self` would pickle storage and kill the leader.
+
+def _err_text(e: typing.Any) -> str:
+    """The text out of a raised error or a returned VM result.
+
+    v0.6 moved this. `gl.vm.UserError` now carries `.data` - what the contract
+    passed to the constructor - where the old SDK carried `.message`. A
+    `gl.vm.VMError` still carries `.message`. Both shapes reach this function:
+    `_handle_leader_error` is handed a `Result` that may be either, and the
+    `except` blocks are handed a UserError.
+
+    Reading the wrong attribute does not crash, it returns "" - and an empty
+    message would make every error class comparison succeed, which would turn
+    a leader that failed for one reason into a leader every validator agreed
+    with for another. So this is one function rather than eight getattrs."""
+    for attr in ("data", "message"):
+        got = getattr(e, attr, None)
+        if isinstance(got, str) and got != "":
+            return got
+    return str(e)
+
 
 def _strip(s: str, token: str) -> str:
     """Remove every occurrence of `token`. The stdlib string-replace method is
@@ -1304,10 +1326,7 @@ def _try_json(url: str, cap: int) -> typing.Any:
     try:
         return _get_json(url, cap)
     except gl.vm.UserError as e:
-        msg = getattr(e, "message", "")
-        if not isinstance(msg, str) or msg == "":
-            msg = str(e)
-        if msg.startswith(ERR_TRANSIENT):
+        if _err_text(e).startswith(ERR_TRANSIENT):
             raise
         return None
     except Exception:
@@ -1400,16 +1419,12 @@ def _collect(task: dict) -> dict:
 def _handle_leader_error(res: typing.Any, task: dict) -> bool:
     """The leader raised. Agreeing means the request settles as a clean refusal
     and the fee goes back; disagreeing forces rotation to another leader."""
-    lmsg = getattr(res, "message", "")
-    if not isinstance(lmsg, str):
-        lmsg = str(lmsg)
+    lmsg = _err_text(res)
     try:
         _collect(task)
         return False  # it worked here - the leader is wrong, rotate
     except gl.vm.UserError as e:
-        vmsg = getattr(e, "message", "")
-        if not isinstance(vmsg, str) or vmsg == "":
-            vmsg = str(e)
+        vmsg = _err_text(e)
         if vmsg.startswith(ERR_EXPECTED) or vmsg.startswith(ERR_EXTERNAL):
             return vmsg == lmsg
         # transient conditions legitimately differ between nodes, so the class
@@ -1425,7 +1440,7 @@ def _handle_leader_error(res: typing.Any, task: dict) -> bool:
 
 # --- storage
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class RiskScore:
     score_id: u32
@@ -1459,14 +1474,14 @@ class RiskScore:
     prev_seq: u32
 
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class TokenFeed:
     token: str
     chain: str
     symbol: str
     name: str
-    history: DynArray[RiskScore]
+    history: gl.storage.DynArray[RiskScore]
     cursor: u32
     capacity: u32
     update_count: u32
@@ -1475,7 +1490,7 @@ class TokenFeed:
     worst_overall: u32
 
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class BoardEntry:
     key: str
@@ -1488,15 +1503,15 @@ class BoardEntry:
     scored_at: u64
 
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class ChainBoard:
     chain: str
-    rows: DynArray[BoardEntry]
+    rows: gl.storage.DynArray[BoardEntry]
     used: u32
 
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class WatchEntry:
     key: str
@@ -1507,11 +1522,11 @@ class WatchEntry:
     baseline_seq: u32
 
 
-@allow_storage
+@gl.storage.allow
 @dataclass
 class Watchlist:
     owner: str
-    entries: DynArray[WatchEntry]
+    entries: gl.storage.DynArray[WatchEntry]
     used: u32
 
 
@@ -1527,27 +1542,27 @@ class _Payee:
         pass
 
 
-class TokenScope(gl.Contract):
+class TokenScope(gl.contract.Contract):
     owner: Address
     paused: bool
     fee_wei: u256
 
-    feeds: TreeMap[str, TokenFeed]
-    tokens: DynArray[str]
-    token_seen: TreeMap[str, bool]
-    id_index: TreeMap[str, str]
+    feeds: gl.storage.TreeMap[str, TokenFeed]
+    tokens: gl.storage.DynArray[str]
+    token_seen: gl.storage.TreeMap[str, bool]
+    id_index: gl.storage.TreeMap[str, str]
     # key -> token_id. The id is the 1-based position in `tokens`, assigned on
     # first sight and never reused: `tokens` is append-only, so an id is stable
     # for the life of the contract even as the score ring buffer laps.
-    token_ids: TreeMap[str, u32]
+    token_ids: gl.storage.TreeMap[str, u32]
 
-    boards: TreeMap[str, ChainBoard]
-    chain_count: TreeMap[str, u32]
-    watchlists: TreeMap[str, Watchlist]
+    boards: gl.storage.TreeMap[str, ChainBoard]
+    chain_count: gl.storage.TreeMap[str, u32]
+    watchlists: gl.storage.TreeMap[str, Watchlist]
 
-    last_request: TreeMap[Address, u64]
-    pending: TreeMap[str, u64]
-    refund_wei: TreeMap[Address, u256]
+    last_request: gl.storage.TreeMap[Address, u64]
+    pending: gl.storage.TreeMap[str, u64]
+    refund_wei: gl.storage.TreeMap[Address, u256]
     refunds_owed: u256
 
     next_id: u32
@@ -1560,8 +1575,8 @@ class TokenScope(gl.Contract):
     sum_ver: u256
     sum_mat: u256
     sum_liq: u256
-    rug_counts: TreeMap[str, u32]
-    gov_log: DynArray[str]
+    rug_counts: gl.storage.TreeMap[str, u32]
+    gov_log: gl.storage.DynArray[str]
 
     def __init__(self):
         self.owner = gl.message.sender_address
@@ -1794,8 +1809,7 @@ class TokenScope(gl.Contract):
             ch = _norm_chain(chain)
             token = _norm_token(token_address)
         except gl.vm.UserError as e:
-            msg = getattr(e, "message", "")
-            return self._reject(str(msg) if msg else str(e))
+            return self._reject(_err_text(e))
         return self._scan(ch, token)
 
     @gl.public.write.payable
@@ -1865,13 +1879,12 @@ class TokenScope(gl.Contract):
             return _agrees(leaders_res.calldata, mine)
 
         try:
-            out = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+            out = gl.vm.run_nondet(leader_fn, validator_fn)
         except gl.vm.UserError as e:
             # The network agreed the token could not be scored. That is a clean
             # answer, not a reason to keep the fee.
-            msg = getattr(e, "message", "")
             del self.pending[key]
-            return self._reject(_short(str(msg) if msg else str(e), 160))
+            return self._reject(_short(_err_text(e), 160))
 
         # --- post-consensus. The ONLY place a score is written, and every field
         # is recomputed from the agreed vector: the leader's numbers never land

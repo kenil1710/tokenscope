@@ -210,9 +210,9 @@ const WRITES: Method[] = [
 ];
 
 const JS_READ = `import { createClient } from "genlayer-js";
-import { studionet } from "genlayer-js/chains";
+import { studioDevnet } from "genlayer-js/chains";
 
-const client = createClient({ chain: studionet });
+const client = createClient({ chain: studioDevnet });
 
 // Views return parsed objects, not JSON strings.
 const record = await client.readContract({
@@ -228,10 +228,10 @@ if (!record.found) {
 }`;
 
 const JS_WRITE = `import { createClient } from "genlayer-js";
-import { studionet } from "genlayer-js/chains";
+import { studioDevnet } from "genlayer-js/chains";
 
 const client = createClient({
-  chain: studionet,
+  chain: studioDevnet,
   provider: window.ethereum,
   account,
 });
@@ -256,7 +256,7 @@ const hash = await client.writeContract({
 
 const CLI = `# Point the CLI at a network first — this setting is global, so it
 # also moves any other job you have running.
-genlayer network set studionet
+genlayer network set studio-dev
 
 genlayer call ${CONTRACT_ADDRESS} get_config
 genlayer call ${CONTRACT_ADDRESS} get_risk \\

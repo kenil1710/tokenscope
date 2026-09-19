@@ -56,6 +56,47 @@ def main() -> int:
     source = read("contracts/TokenScope.py")
     tree = ast.parse(source)
 
+    section("the v0.6 contract format")
+    # Each of these fails on chain with an error that names neither the line
+    # nor the reason, so each gets a check here. docs/PROBE.md section 12.
+    for rel in ("contracts/TokenScope.py", "contracts/RiskConsumer.py",
+                "build/TokenScope.min.py", "build/RiskConsumer.min.py"):
+        text = read(rel)
+        lines = text.split("\n")
+        check(lines[0] == "# v0.3.0", f"{rel}: version line first")
+        check(lines[1] == '# { "Depends": "py-genlayer:test" }',
+              f"{rel}: runner id on line 2")
+        check(not lines[2].lstrip().startswith("#"),
+              f"{rel}: nothing else looks like runner config")
+        tree_ = ast.parse(text)
+        # A bare TreeMap/DynArray/allow is a NameError on chain: the star
+        # import does not bind them, only gl.storage.* does.
+        bare = sorted({
+            n.id for n in ast.walk(tree_)
+            if isinstance(n, ast.Name)
+            and n.id in ("TreeMap", "DynArray", "Array", "allow_storage")
+        })
+        check(not bare, f"{rel}: no unqualified storage names {bare or ''}")
+        check("gl.vm.run_nondet_unsafe" not in text,
+              f"{rel}: no pre-v0.6 run_nondet_unsafe")
+        # Structural, not textual: the docstring that explains this rename
+        # legitimately contains the old spelling.
+        legacy = [
+            n for n in ast.walk(tree_)
+            if isinstance(n, ast.Attribute)
+            and n.attr in ("contract_interface", "Contract", "get_contract_at")
+            and isinstance(n.value, ast.Name) and n.value.id == "gl"
+        ]
+        check(not legacy,
+              f"{rel}: no pre-v0.6 gl.contract_interface / gl.Contract")
+    # UserError moved its payload to .data; reading .message returns "" and
+    # would make every error-class comparison succeed.
+    source_text = read("contracts/TokenScope.py")
+    check('getattr(e, "message"' not in source_text
+          and 'getattr(res, "message"' not in source_text,
+          "TokenScope reads error text through _err_text, not .message")
+    check("def _err_text(" in source_text, "the _err_text helper exists")
+
     section("every public method is documented")
     public = {
         m.name
@@ -102,6 +143,16 @@ def main() -> int:
           f"minifier name map is injective ({len(mapping)} renames)")
     check(class_methods(tree) == class_methods(ast.parse(artifact.decode())),
           "every class method survives minification")
+
+    section("nothing still points at a retired network")
+    for rel in ("README.md", "deployments.json"):
+        check("bradbury" not in read(rel).lower(),
+              f"{rel}: no Bradbury references")
+    fe = read("frontend/src/lib/genlayer.ts")
+    check("studioDevnet" in fe, "frontend targets studioDevnet")
+    check("61997" in json.dumps(json.loads(
+        (ROOT / "deployments.json").read_text())),
+        "deployments.json records chain 61997")
 
     section("deployments.json describes the files that are actually here")
     manifest = json.loads((ROOT / "deployments.json").read_text())

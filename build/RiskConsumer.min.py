@@ -1,4 +1,6 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# v0.3.0
+# { "Depends": "py-genlayer:test" }
+import genlayer as gl
 from genlayer import *
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,7 +46,7 @@ def _k(c: int, d: str) -> int:
 def _l(b: str, a: int = 120) -> str:
  b = str(b)
  return b[:a] if len(b) > a else b
-@gl.contract_interface
+@gl.contract.interface
 class ITokenScope:
  class View:
   def get_risk(self, b: str, a: str) -> typing.Any: ...
@@ -59,7 +61,7 @@ class ITokenScope:
   def get_stats(self) -> typing.Any: ...
  class Write:
   pass
-@allow_storage
+@gl.storage.allow
 @dataclass
 class Listing:
  token: str
@@ -73,17 +75,17 @@ class Listing:
  trade_cap: u64
  score_id: u32
  listed_at: u64
-class RiskConsumer(gl.Contract):
+class RiskConsumer(gl.contract.Contract):
  owner: Address
  oracle: Address
  min_score: u32
  max_age_seconds: u64
  max_rug_level: str
  slots: u32
- listings: DynArray[Listing]
- listed: TreeMap[str, bool]
+ listings: gl.storage.DynArray[Listing]
+ listed: gl.storage.TreeMap[str, bool]
  listing_count: u32
- log: DynArray[str]
+ log: gl.storage.DynArray[str]
  def __init__(self, a: str):
   self.owner = gl.message.sender_address
   self.oracle = Address(str(a))

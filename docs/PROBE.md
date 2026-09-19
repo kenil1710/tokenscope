@@ -354,6 +354,11 @@ from the same explorer and are already in the vector on exactly these terms.
 
 ## 11. The Bradbury deploy ceiling moved — measured 2026-09-19
 
+> **Historical.** TokenScope no longer targets Bradbury; everything now runs
+> on Studio Devnet (section 12). This section is kept because the figures were
+> measured rather than assumed and the method transfers to any network.
+
+
 `deployments.json → size_finding` recorded a **pubdata** ceiling between 53,000
 and 53,700 bytes on 2026-09-02, found by walking into it. As of 2026-09-19 that
 is no longer the binding constraint on Bradbury, and the new one is much lower.
@@ -471,3 +476,133 @@ second is tried; if the first settles, the second is never called. A refusal
 outranks a clean 404 — another node may have got an answer from the host that
 refused us, so the round fails rather than recording a missing source it
 cannot vouch for.
+
+---
+
+## 12. Porting to Studio Devnet and the v0.6 contract format
+
+*Captured 2026-09-20.*
+
+Studio Devnet (chain 61997, `https://studio-dev.genlayer.com/api`) runs the
+**v0.6** contract dialect. Everything below was established by deploying probe
+contracts and reading the failures, because each of these mistakes reports an
+error that names neither the line nor the reason.
+
+### 12.1 The runner header
+
+```python
+# v0.3.0
+# { "Depends": "py-genlayer:test" }
+```
+
+Two lines: a **version line first**, then the JSON. The runner reads its
+configuration off the leading run of comment lines, not off line 1 alone (SDK
+spec, *Runners → Runner Layout → Text-based*).
+
+`py-genlayer:test` is a symbolic id the node resolves. A pinned hash was tried
+first and refused:
+
+| `Depends` | result |
+|---|---|
+| `py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qg2qng` | `invalid_contract runner malformed` |
+| `py-genlayer:1zr6nqk597d97kg0dyxg0shhrykx5v02zjgnyrajapy4wlqvfvwh` | `invalid_contract runner malformed` |
+| `py-genlayer:test` | **deploys** |
+
+The first of those is 34 characters; a GVM32-encoded 256-bit hash is 52, so it
+could never have resolved. The second is a real v0.6 runner hash — it is the
+one in the local SDK cache whose `runner.json` boots `_genlayer_bootloader.py`
+rather than the pre-v0.6 `_genlayer_runner.py` — and studio-dev still refused
+it. The node resolves the symbolic id; it does not serve that content hash.
+
+**This broke the minifier**, which is worth stating because the failure is
+silent. `tools/minify_contract.py` kept line 1 byte-for-byte and then actively
+deleted a comment sitting on line 2 — against a v0.6 header that removes the
+`Depends` line, producing an artifact that deploys and then dies at runtime.
+It now carries the whole leading comment block and validates that the JSON
+parses.
+
+### 12.2 What the SDK actually exposes
+
+`from genlayer import *` does **not** bring in the storage vocabulary. A probe
+contract deployed purely to answer this returned:
+
+```
+star-import binds:  Address, Keccak256, Lazy, SizedArray, bigint,
+                    u8..u256, i8..i256, public, private,
+                    calldata chain contract eq_principle evm message
+                    nondet storage types vm wasi
+star-import does NOT bind:  DynArray, TreeMap, Array, allow
+gl.<name> has:      Address, bigint, public, private, u32, u256, …
+gl.<name> does NOT have:  DynArray, TreeMap, Array, allow
+gl.storage.<name> has:    DynArray, TreeMap, Array, allow
+```
+
+So the storage names live at `gl.storage.*` and nowhere else, even though
+`genlayer.__all__` lists them. Writing a bare `TreeMap[...]` passes every
+offline check and then fails on chain with
+`NameError: name 'DynArray' is not defined`. The test suite's stub is shaped to
+match this exactly — it deliberately does **not** offer the unqualified names,
+so the suite fails the same way the chain would.
+
+### 12.3 The changes that mattered
+
+| pre-v0.6 | v0.6 |
+|---|---|
+| `from genlayer import *` | `import genlayer as gl` + `from genlayer import *` |
+| `gl.Contract` | `gl.contract.Contract` |
+| `@allow_storage` | `@gl.storage.allow` |
+| `TreeMap[...]`, `DynArray[...]` | `gl.storage.TreeMap[...]`, `gl.storage.DynArray[...]` |
+| `gl.vm.run_nondet_unsafe(l, v)` | `gl.vm.run_nondet(l, v)` |
+| `gl.contract_interface` | `gl.contract.interface` |
+| `gl.evm.contract_interface` | unchanged |
+| `UserError(msg)` → `e.message` | `UserError(data)` → **`e.data`** |
+
+That last row is the dangerous one. `UserError` moved its payload from
+`.message` to `.data`, and reading the wrong attribute does not crash — it
+returns `""`. An empty message would make every error-class comparison in
+`_handle_leader_error` succeed, turning a leader that failed for one reason
+into a leader every validator agreed with for another. The contract now reads
+it through a single `_err_text` helper rather than eight scattered `getattr`
+calls, and the test stub carries `.data` **only**, so a regression cannot pass
+by reading the attribute that happens to exist.
+
+### 12.4 Fees are mandatory on every write
+
+Without one, the transaction reverts:
+
+```
+FeeValueMustBeNonZero(1)
+```
+
+`--fee-value` on its own is not enough — the **distribution object** has to
+accompany it:
+
+```bash
+FEES=$(genlayer estimate-fees --json | tail -1)
+DIST=$(python3 -c "import json,sys;print(json.dumps({'distribution':json.loads(sys.argv[1])['distribution']}))" "$FEES")
+FEE=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['feeValue'])" "$FEES")
+genlayer deploy --contract build/TokenScope.min.py --fees "$DIST" --fee-value "$FEE"
+```
+
+`--fee-value` is the **network** fee deposit and is a different thing from the
+contract's own payable value. The CLI still has no flag for the latter, so
+`fee_wei` is set to 0 on this demo deployment exactly as before — otherwise
+`request_risk` would be uncallable from the command line.
+
+### 12.5 The client library
+
+`genlayer-js` **1.1.8** knows `localnet`, `studionet`, `testnetAsimov` and
+`testnetBradbury` — no chain 61997. `studioDevnet` arrives in **2.0.0-rc.1**,
+with `isStudio: true` and the right RPC. The frontend was upgraded rather than
+hand-rolling a chain object, because a hand-rolled one carries none of the
+consensus addresses the SDK needs to poll a transaction.
+
+### 12.6 What the port did not change
+
+USDT scored on Studio Devnet through the ported contract returns
+`content_hash 465:96149d87575442e3` — the same fingerprint the pre-port
+artifact produced on a different chain, under a different SDK, with a
+different validator set. Every storage declaration and every error type in the
+contract was rewritten between those two runs and not one of the 32 agreed
+ordinals moved. That is the check worth making, and it is why the hash is
+prefixed with the vector's canonical length rather than being an opaque digest.

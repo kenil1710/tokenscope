@@ -286,7 +286,8 @@ export default async function LandingPage() {
                   </div>
                   <p className="mt-6 flex items-center justify-center gap-2 text-xs text-ink-200">
                     <Boxes className="size-3.5" aria-hidden />
-                    Deployed on GenLayer Studionet and Bradbury from the same artifact
+                    Deployed on GenLayer Studio Devnet — contract, consumer and
+                    every score on one network
                   </p>
                 </div>
               </div>

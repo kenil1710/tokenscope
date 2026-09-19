@@ -23,68 +23,57 @@ accept as collateral?*
 **Web app: [tokenscope-two.vercel.app](https://tokenscope-two.vercel.app)** — scan a
 token, rate a pasted portfolio or a whole wallet, read a token's scoring
 history round by round, keep an on-chain watchlist, browse the registry,
-compare two tokens, and re-verify any score on-chain. Runs against the 1.1.0
-Studionet deployment; `frontend/` builds against either network.
+compare two tokens, and re-verify any score on-chain.
 
-| | rubric | Studionet | Bradbury |
-|---|---|---|---|
-| **TokenScope** | **1.1.0** | `0x19063FE1702dAAA12a3FD52917A8d4abf80e3d88` | *see below* |
-| **TokenScope** | 1.0.0 | `0xaC6B3575D82825533cA7E35fE8C57c9075b74E95` | `0xbAAF6f0151D728984445fc42edAC84e13241d4E6` |
-| **RiskConsumer** | 1.1.0 | `0xcb9c1E7214B4e610c28A3E8242d9bc2b793A8193` | — |
-| **RiskConsumer** | 1.0.0 | `0x5F033B3A71215C09f89fbc8F650d0Fbfc65e4C28` | `0x9DbdC862e5A35AC0126cd47d4B105E679A2Dd9ee` |
+**Everything is on one network: GenLayer Studio Devnet, chain 61997.**
+Contract, consumer, every score, and the app.
 
-Verify any deployment with
-`genlayer code <address> | diff - build/TokenScope.min.py`.
+| | address |
+|---|---|
+| **TokenScope** 1.1.0 | `0xf68f3743f9783185C0D8C45aff20f9d712949d02` |
+| **RiskConsumer** | `0x65B86007A22B06C6cdeCDF72BdA55dA8B4A92Eb1` |
 
-> ### ⚠︎ Bradbury will not accept a contract this size today
->
-> **1.1.0 is not on Bradbury, and neither is anything else of this size.**
-> Bradbury now rejects any transaction whose gas limit exceeds **2²⁴ =
-> 16,777,216**, and deploy gas runs at ~810 gas per source byte — a ceiling of
-> **≈20,170 bytes of contract source**. The 1.1.0 artifact is 51,390.
->
-> This is not the milestone's doing. **The 1.0.0 artifact currently live on
-> Bradbury cannot be redeployed today either** — that exact 52,070-byte file
-> was pulled from git and tried, byte for byte, and refused the same way.
-> Bisected and measured in [`docs/PROBE.md` §11](docs/PROBE.md). There is no
-> compression route around it: GenVM's ZIP runner layout permits `stored` only.
->
-> The existing Bradbury deployment still **reads** perfectly — but only with
-> `genlayer` CLI **0.39.2**. Release `0.40.0-rc.3` (2026-09-03) ships the v0.6
-> calldata format and cannot call old-format contracts at all, failing with
-> `call to private method Contract.__handle_undefined_method__`. Pin the CLI:
->
-> ```bash
-> npm install -g genlayer@0.39.2
-> genlayer network set testnet-bradbury
-> genlayer call 0xbAAF6f0151D728984445fc42edAC84e13241d4E6 get_stats   # works
-> ```
+```bash
+genlayer network set studio-dev
+genlayer call 0xf68f3743f9783185C0D8C45aff20f9d712949d02 get_config
+```
+
+Verify the deployed source against the artifact in this repository:
+
+```bash
+genlayer code 0xf68f3743f9783185C0D8C45aff20f9d712949d02 | diff - build/TokenScope.min.py
+```
+
+> **Studio Devnet runs the v0.6 contract format**, which is a different
+> dialect from the one earlier deployments used: a two-line runner header,
+> `import genlayer as gl`, `gl.contract.Contract`, `gl.storage.TreeMap`, and a
+> fee estimate attached to every write. The port and how each difference was
+> established are in [`docs/PROBE.md` §12](docs/PROBE.md).
 
 Chains supported: **ethereum, base, arbitrum, polygon** — one Blockscout schema,
 four hosts. **Ethereum and Arbitrum are scoring today**; Base and Polygon are
 blocked on a broken upstream endpoint and refuse rather than guess
 ([details](#a-flaky-endpoint-is-not-a-missing-one)).
 
-Scored on the live Bradbury deployment:
+Scored live on Studio Devnet:
 
-| Token | Chain | Address | Overall | Content hash | Rug flags | Confidence |
-|---|---|---|---:|---|---|---|
-| USDT | ethereum | `0xdAC17F95…31ec7` | **86** | `422:41a76eee24bba743` | MINTABLE, PAUSABLE, HAS_BLACKLIST | HIGH |
-| PEPE | ethereum | `0x69825081…11933` | **87** | `422:28e4f85588019150` | HAS_BLACKLIST | HIGH |
-| USDT0 | arbitrum | `0xFd086bC7…FCbb9` | **89** | `423:96852a8e3bafa0b8` | UPGRADEABLE_PROXY | HIGH |
+| Token | Chain | Address | Overall | Content hash | Rug flags |
+|---|---|---|---:|---|---|
+| USDT | ethereum | `0xdAC17F95…31ec7` | **85** | `465:96149d87575442e3` | MINTABLE, PAUSABLE, HAS_BLACKLIST, HIDDEN_OWNER |
+| PEPE | ethereum | `0x69825081…11933` | **88** | `465:dc9cf40900e26bdf` | HAS_BLACKLIST |
+| LINK | ethereum | `0x51491077…f986ca` | **90** | `465:3f90b2e299927c0e` | none |
+| SHIB | ethereum | `0x95ad61b0…64c4ce` | **83** | `465:e96d339961dcdd26` | none |
+| USDT0 | arbitrum | `0xFd086bC7…FCbb9` | **87** | `466:67bb9d6bd8cc4175` | UPGRADEABLE_PROXY, HIDDEN_OWNER |
 
-All three with `sources_ok: address,contract,creation,holders,transfers` — every
-source resolved. PEPE's `distribution_score` is 80 against USDT's 70, and
-USDT0's `verification_score` is 65 against Ethereum USDT's 75 because it is a
-proxy and `proxy_v` drops a rung. Same rubric, three different risk shapes.
+All five with `sources_ok: address,contract,creation,holders,owner,transfers` —
+every source resolved, the `owner()` probe included. Same rubric, five
+different risk shapes.
 
-The USDT hash above is worth a second look. `422:41a76eee24bba743` is the hash
-the **pre-pooling** artifact produced on Bradbury on 2026-08-31, and it is what
-the new deployment produced on 2026-09-02 — and what Studionet produced
-independently minutes later, on a different network with a different validator
-set. Rewriting 2,255 bytes of the deployed source moved none of the 29 agreed
-ordinals, which is the only claim a hash like that can make and the one worth
-making.
+That USDT hash is worth a second look. `465:96149d87575442e3` is what the
+**pre-port** artifact produced, and it is what the **v0.6 port** produced here
+on a different chain, under a different SDK, with a different validator set.
+Moving a contract between VM dialects moved none of the 32 agreed ordinals —
+which is the only claim a hash like that can make, and the one worth making.
 
 **Arbitrum needed retries, and that is worth saying out loud.** Its `/holders`
 answers 200 but takes ~7.5s for 25 KB, and five sequential fetches at that
@@ -104,6 +93,67 @@ genlayer write <oracle> request_risk --args 0xdAC17F958D2ee523a2206206994597C13D
 genlayer call  <oracle> get_risk     --args 0xdAC17F958D2ee523a2206206994597C13D831ec7 ethereum
 genlayer call  <oracle> verify_risk  --args 1
 ```
+
+## One network, and the v0.6 port that took
+
+Contract, consumer, every score and the app all sit on **Studio Devnet, chain
+61997**. Previously the project was split — 1.1.0 on one Studio network, 1.0.0
+on two networks at once — which meant the app read one deployment while the
+docs described another. One network removes that.
+
+Getting there meant porting to the **v0.6 contract dialect**. Every difference
+below was established by deploying a probe and reading the failure, because
+each of these reports an error that names neither the line nor the reason.
+Full log in [`docs/PROBE.md` §12](docs/PROBE.md).
+
+| pre-v0.6 | v0.6 |
+|---|---|
+| `# { "Depends": … }` | `# v0.3.0` **then** `# { "Depends": "py-genlayer:test" }` |
+| `from genlayer import *` | `import genlayer as gl` + `from genlayer import *` |
+| `gl.Contract` | `gl.contract.Contract` |
+| `@allow_storage` | `@gl.storage.allow` |
+| `TreeMap[…]`, `DynArray[…]` | `gl.storage.TreeMap[…]`, `gl.storage.DynArray[…]` |
+| `gl.vm.run_nondet_unsafe` | `gl.vm.run_nondet` |
+| `gl.contract_interface` | `gl.contract.interface` |
+| `UserError(msg)` → `.message` | `UserError(data)` → **`.data`** |
+
+Three of those are traps rather than renames.
+
+**The storage names are not where the docs say.** `genlayer.__all__` lists
+`TreeMap` and `DynArray`, but `from genlayer import *` does not actually bind
+them — only `gl.storage.*` has them. A bare `TreeMap[...]` passes every
+offline check and then fails on chain with `NameError`. A probe contract
+deployed solely to enumerate the real namespace settled it, and the test
+stub is now shaped to withhold exactly what the chain withholds.
+
+**`UserError` moved its payload and reading the old attribute does not
+crash** — `getattr(e, "message", "")` simply returns `""`. An empty message
+would make every error-class comparison in `_handle_leader_error` succeed,
+turning a leader that failed for one reason into a leader every validator
+agreed with for another. There is now one `_err_text` helper instead of eight
+scattered `getattr` calls, and the stub carries `.data` only so a regression
+cannot pass by reading whichever attribute happens to exist.
+
+**Every write needs a fee**, and `--fee-value` alone is not enough — the
+distribution object has to go with it or the transaction reverts with
+`FeeValueMustBeNonZero(1)`. `tools/deploy_studio_dev.sh` reads both out of
+`genlayer estimate-fees --json`.
+
+The runner id is the symbolic **`py-genlayer:test`**. Two pinned content
+hashes were tried first and both were refused with `invalid_contract runner
+malformed`; the node resolves the symbolic id and does not serve those hashes.
+
+### What the port did not change
+
+USDT scored through the ported contract returns `content_hash
+465:96149d87575442e3` — the same fingerprint the pre-port artifact produced,
+on a different chain, under a different SDK, with a different validator set.
+Every storage declaration and every error type was rewritten in between and
+not one of the 32 agreed ordinals moved. That is the check worth making, and
+it is why the hash carries the vector's canonical length as a prefix rather
+than being an opaque digest.
+
+---
 
 ## Milestone 1.1.0
 
@@ -378,14 +428,16 @@ corrected, and a second RPC host was added in front). **None of those changes
 touched an ordinal on a round that resolved**, and the identical hash is how
 that is checked rather than asserted.
 
-**1.0.0, across two networks.** Scoring USDT on **Bradbury** produced
-`content_hash 422:d4c68f52cadab4c8` and `overall 86` — byte-identical to the
-Studionet record written minutes earlier by a **different validator set**. The
-vector, not the network, decides the score.
+**Across a VM dialect, which is the strongest version of this claim.** The
+same USDT record came back `465:96149d87575442e3` from the pre-port artifact
+and from the v0.6 port running here on Studio Devnet — a different chain, a
+different SDK, a different validator set, and a contract whose every storage
+declaration and error type was rewritten in between. Not one of the 32 agreed
+ordinals moved.
 
-Re-scoring the same token on Bradbury an hour later produced a **different**
-hash, `422:41a76eee24bba743`, and the **same** `overall 86`. Diffing the two
-evidence vectors, exactly one of 1.0.0's 29 ordinals moved:
+**Across time, a token really does drift.** Re-scoring one an hour later can
+produce a **different** hash and the **same** `overall`. In one such pair
+exactly one ordinal had moved:
 
 ```
 supply_d: 2  ->  3      # supply held outside the top 50 crossed the 40% rung
@@ -698,7 +750,7 @@ The gate checks score **and** rug level, because they fail differently: a 40 is
 merely unproven; an 85 with a `CRITICAL` rug level looks excellent on every
 dimension while the owner can still mint unlimited supply into it.
 
-Live, on Bradbury — `list_token(USDT, ethereum)` through `require_safe`:
+Live, on Studio Devnet — `list_token(USDT, ethereum)` through `require_safe`:
 
 ```json
 { "symbol": "USDT", "overall": 86, "rug_level": "MEDIUM",
@@ -778,7 +830,7 @@ once value is attached.
 
 ```bash
 python3 test/test_logic.py
-# 302 tests, 648 assert statements, 7,035 assertions executed
+# 303 tests, 653 assert statements, 7,088 assertions executed
 # stdlib only - no chain, no network, no model, no genlayer install
 ```
 
@@ -787,10 +839,17 @@ ordinal lattice: every feature key, over its entire declared range, asserting
 that no combination can produce an out-of-range dimension, a non-multiple of 5,
 or an unknown rug level.
 
-**162 of those tests are new in 1.1.0** — the four new flags and the owner
+**163 of those tests are new in 1.1.0** — the four new flags and the owner
 probe's five response classes, `token_id` and the frozen delta, `rescan_token`,
 both history reads, `batch_scan`'s parsing, aggregates and ordering, and the
 minifier's renaming pass.
+
+The stub the suite runs the contract against is shaped to match the **v0.6**
+SDK as measured, not as documented: it offers `gl.storage.TreeMap` and
+deliberately **withholds** the bare `TreeMap`, because the real star-import
+withholds it too. A stub that were more generous than the chain would let an
+unqualified name pass here and fail there. Same reasoning for `UserError`,
+which carries `.data` only.
 
 The suite checks five separate things:
 
@@ -859,10 +918,10 @@ Three details worth knowing:
 - **Reads need no wallet.** Only a *new* scan and a watchlist write do — and the
   landing page and `/portfolio` never touch one. `/portfolio` will happily rate an
   address you do not control, because balances are public data.
-- **`/api/rpc` is a same-origin relay for Studionet.** Studio serves CORS headers
+- **`/api/rpc` is a same-origin relay for Studio.** Studio serves CORS headers
   on success but drops them on its 429s, so an exhausted rate limit reaches the
-  browser as a phantom CORS error instead of the rate-limit error it is. Bradbury
-  sets them on errors too, so it stays direct.
+  browser as a phantom CORS error instead of the rate-limit error it is.
+  Relaying through our own origin means the real reason survives.
 - **The score-history chart pins its y-axis to 0–100**, never to the data. An
   auto-fitted axis turns a three-point wobble into a cliff, which is exactly the
   misreading the contract's quantization exists to prevent. The five-dimension
@@ -888,8 +947,18 @@ npm run typecheck && npm run lint && npm run build
 ```bash
 python3 tools/minify_contract.py contracts/TokenScope.py  -o build/TokenScope.min.py
 python3 tools/minify_contract.py contracts/RiskConsumer.py -o build/RiskConsumer.min.py
-bash tools/deploy_bradbury.sh
+python3 tools/audit.py          # cross-file consistency, incl. the v0.6 invariants
+python3 test/test_logic.py      # 303 tests, stdlib only
+bash tools/deploy_studio_dev.sh
 ```
+
+The minifier carries the **whole** runner comment block, not just line 1. That
+is not a detail: the v0.6 header is two lines, and the previous version kept
+line 1 and then deleted a comment on line 2 — which against this header
+silently removes the `Depends` line and produces an artifact that deploys and
+then dies at runtime with `invalid_contract runner malformed`. It now also
+checks that the header's JSON parses, so a mangled one fails the build rather
+than the chain.
 
 The minifier strips comments, docstrings and blank lines, narrows indentation,
 pools repeated string literals into short module-level names, and — new in
@@ -926,55 +995,34 @@ PYTHONHASHSEED=999 python3 tools/minify_contract.py contracts/TokenScope.py -o /
 shasum -a 256 /tmp/a.py /tmp/b.py build/TokenScope.min.py   # three identical hashes
 ```
 
-### The deploy ceiling is real, and here is where it is
+### Artifact size, and the budget that guards it
 
-The 48 KB figure in circulation is stale — a 50,382-byte artifact deployed fine
-to both networks on 2026-08-31. But there **is** a ceiling, and adding the
-watchlist walked straight into it. At 54,325 bytes Bradbury refused:
+The 48 KB figure in circulation for the GenVM runner is stale. There *is* a
+ceiling though, and this project found it by walking into it: adding the
+watchlist took the artifact to 54,325 bytes and the deploy was refused with
 
 ```
-GenLayer RPC error (eth_estimateGas): invalid transaction: BlockPubdataLimitReached
-GenLayer RPC error (eth_sendRawTransaction): intrinsic gas too low
+invalid transaction: BlockPubdataLimitReached
 ```
 
-Padded probe contracts then bracketed it: **52,000 and 53,000 bytes deployed;
-53,700 was refused.** So the ceiling sits between 53,000 and 53,700 bytes of
-source — and because it is a *block* pubdata limit rather than a per-transaction
-one, the exact figure depends on what else is in the block.
+Padded probe contracts then bracketed it — **52,000 and 53,000 bytes deployed,
+53,700 was refused** — so the limit sits between the two. It is a *block*
+pubdata limit rather than a per-transaction one, which means the exact figure
+depends on what else is in the block and the margin is not ours to control.
+`test/test_logic.py` therefore budgets **53,000** and fails the build above it.
 
-The fix was not to cut the feature. String pooling took the artifact from 54,325
-to **52,070** bytes: `"token_address"` alone appears fifteen times, and binding
-it once to a two-character name saves 174 bytes without changing a single
-string's value. Annotations, f-string fragments and `match` patterns are
-excluded, because those are the three places where a name and a literal do not
-mean the same thing.
+The fix was never to cut a feature. Two minifier passes bought the room, and
+both are checked rather than trusted: string pooling took 54,325 → 52,070, and
+identifier renaming took 59,532 → 51,427 once the milestone's three features
+landed. The proof in each case is the same — USDT's content hash before and
+after is identical, so thousands of bytes of deployed source moved and not one
+agreed ordinal did.
 
-Proof it changed nothing: USDT on Ethereum, scored through the pooled artifact
-on the fresh Bradbury deployment, returns content hash `422:41a76eee24bba743` —
-byte-identical to the hash the unpooled artifact produced on the previous
-deployment. `test/test_logic.py` budgets 53,000 bytes and fails the build above
-it.
-
-#### …and as of 2026-09-19 it moved, on Bradbury only
-
-The pubdata ceiling above is no longer the binding constraint on Bradbury. That
-chain now refuses any transaction whose **gas limit** exceeds `2²⁴ =
-16,777,216`, and deploy gas runs at ~809.5 gas per source byte plus ~240,000
-fixed — a ceiling of **≈20,170 bytes**. Bisected exactly:
-
-| tx gas limit | result | | source bytes | est. gas | result |
-|---|---|---|---|---|---|
-| 16,777,216 | deploys | | 20,000 | 16,640,019 | deploys |
-| 16,777,217 | `gas limit too high` | | 21,000 | 17,406,313 | refused |
-
-The block gas limit is 100,000,000, so it is a per-transaction cap. Studionet
-is unaffected — it prices deploys at a flat 500,000 gas and took the 51,390-byte
-1.1.0 artifact without complaint. Full method and figures in
-[`docs/PROBE.md` §11](docs/PROBE.md).
-
-This is a network change, not a milestone regression: **the 52,070-byte 1.0.0
-artifact that is live on Bradbury right now cannot be redeployed today either**,
-and that was confirmed by pulling it from git and trying it byte for byte.
+Studio Devnet prices deploys at a flat fee rather than per byte, so the
+pubdata ceiling is not what binds there. The budget stays anyway: it is the
+tightest constraint this contract has ever had to satisfy, and a size test
+that only passes because the current network happens to be generous is not a
+test.
 
 ## Method surface
 
